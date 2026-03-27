@@ -49,11 +49,37 @@ Linux:
 socat TCP-LISTEN:19455,reuseaddr,fork UNIX-CONNECT:${XDG_RUNTIME_DIR}/kpxc_server
 ```
 
-Windows (PowerShell, requires socat via WSL or nmap's ncat):
-```powershell
-# From WSL:
-socat TCP-LISTEN:19455,reuseaddr,fork UNIX-CONNECT:/mnt/wslg/runtime-dir/kpxc_server
+Windows (native bridge — no dependencies):
+
+A native C bridge is included in `bridge/kpxc-bridge.c`. It forwards TCP connections
+to the KeePassXC named pipe (`\\.\pipe\org.keepassxc.KeePassXC.BrowserServer`).
+
+Build with Visual Studio Developer Command Prompt:
+```cmd
+cl /O2 /W4 bridge\kpxc-bridge.c /Fe:kpxc-bridge.exe ws2_32.lib advapi32.lib
 ```
+
+Or MinGW:
+```bash
+gcc -O2 -Wall -o kpxc-bridge.exe bridge/kpxc-bridge.c -lws2_32 -ladvapi32
+```
+
+Run in console mode (for testing):
+```cmd
+kpxc-bridge.exe -port 19455
+```
+
+Install as a Windows service (run as Administrator):
+```cmd
+kpxc-bridge.exe -port 19455 install
+sc start KeePassXCBridge
+```
+
+The service reads its configuration from the registry at
+`HKLM\SYSTEM\CurrentControlSet\Services\KeePassXCBridge\Parameters`
+and logs to `kpxc-bridge.log` next to the executable.
+
+Ensure **Windows Firewall** allows inbound TCP on the configured port.
 
 Then configure the MCP server to connect via TCP (see environment variables below).
 
