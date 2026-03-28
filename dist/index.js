@@ -200,7 +200,7 @@ class KeePassXCClient {
                 if (r)
                     r(new Error("Response timeout"));
             }, timeout ?? RESPONSE_TIMEOUT);
-            this.socket.write(JSON.stringify(data));
+            this.socket.write(JSON.stringify(data) + "\n");
         });
     }
     // ---- Encryption / decryption ----------------------------------------------
