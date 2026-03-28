@@ -13,11 +13,8 @@ jobs:
     runs-on: windows
     steps:
       - name: Checkout
-        shell: powershell
-        run: |
-          git clone --depth 1 --branch ${{ github.ref_name }} ${{ github.server_url }}/${{ github.repository }}.git src
-          Copy-Item -Recurse src\* .
-          Remove-Item -Recurse -Force src
+        shell: cmd
+        run: git clone --depth 1 --branch %GITHUB_REF_NAME% %GITHUB_SERVER_URL%/%GITHUB_REPOSITORY%.git .
 
       - name: Install Zig
         shell: powershell
