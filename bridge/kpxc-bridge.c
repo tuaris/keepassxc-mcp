@@ -142,6 +142,26 @@ done:
     return 0;
 }
 
+/* Resolve the actual pipe path — KeePassXC may append _Username */
+static const char *resolve_pipe(void)
+{
+    /* Try the configured name first */
+    if (WaitNamedPipeA(g_pipe, 500))
+        return g_pipe;
+
+    /* Try with _Username suffix */
+    static char suffixed[512];
+    char username[128];
+    DWORD ulen = sizeof(username);
+    if (GetUserNameA(username, &ulen) && ulen > 0) {
+        _snprintf(suffixed, sizeof(suffixed), "%s_%s", g_pipe, username);
+        if (WaitNamedPipeA(suffixed, 500))
+            return suffixed;
+    }
+
+    return NULL;
+}
+
 /* Handle a single accepted TCP connection */
 static DWORD WINAPI handle_connection(LPVOID param)
 {
@@ -149,16 +169,20 @@ static DWORD WINAPI handle_connection(LPVOID param)
     HANDLE pipe = INVALID_HANDLE_VALUE;
 
     /* Wait for the KeePassXC pipe to become available */
-    if (!WaitNamedPipeA(g_pipe, PIPE_WAIT_MS)) {
-        logmsg("ERROR: Pipe not available (%s) — is KeePassXC running with "
-               "browser integration enabled? (error %lu)",
-               g_pipe, GetLastError());
+    const char *pipe_path = resolve_pipe();
+    if (!pipe_path) {
+        logmsg("ERROR: Pipe not available (%s or %s_<user>) — is KeePassXC "
+               "running with browser integration enabled? (error %lu)",
+               g_pipe, g_pipe, GetLastError());
         closesocket(tcp_sock);
         return 1;
     }
 
+    if (strcmp(pipe_path, g_pipe) != 0)
+        logmsg("Using pipe: %s", pipe_path);
+
     pipe = CreateFileA(
-        g_pipe,
+        pipe_path,
         GENERIC_READ | GENERIC_WRITE,
         0,             /* no sharing */
         NULL,          /* default security */
@@ -167,7 +191,7 @@ static DWORD WINAPI handle_connection(LPVOID param)
         NULL);
 
     if (pipe == INVALID_HANDLE_VALUE) {
-        logmsg("ERROR: CreateFile(%s) failed: error %lu", g_pipe, GetLastError());
+        logmsg("ERROR: CreateFile(%s) failed: error %lu", pipe_path, GetLastError());
         closesocket(tcp_sock);
         return 1;
     }
