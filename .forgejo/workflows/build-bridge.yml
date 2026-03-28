@@ -28,10 +28,11 @@ jobs:
       - name: Install Zig
         shell: powershell
         run: |
+          [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
           $zigVersion = "0.14.0"
           $zigUrl = "https://ziglang.org/download/$zigVersion/zig-windows-x86_64-$zigVersion.zip"
           Write-Host "Downloading Zig $zigVersion..."
-          Invoke-WebRequest -Uri $zigUrl -OutFile zig.zip
+          Invoke-WebRequest -Uri $zigUrl -OutFile zig.zip -UseBasicParsing
           Expand-Archive -Path zig.zip -DestinationPath .
           Rename-Item "zig-windows-x86_64-$zigVersion" zig
           .\zig\zig.exe version
