@@ -54,13 +54,17 @@ Windows (native bridge — no dependencies):
 A native C bridge is included in `bridge/kpxc-bridge.c`. It forwards TCP connections
 to the KeePassXC named pipe (`\\.\pipe\org.keepassxc.KeePassXC.BrowserServer`).
 
-Build with Visual Studio Developer Command Prompt:
-```cmd
-cl /O2 /W4 bridge\kpxc-bridge.c /Fe:kpxc-bridge.exe ws2_32.lib advapi32.lib
+Pre-built binaries are available from
+[Releases](https://pacyworld.dev/daniel/keepassxc-mcp/releases).
+
+Build from source (cross-compile from any OS with [Zig](https://ziglang.org/)):
+```bash
+zig cc -O2 -target x86_64-windows-gnu bridge/kpxc-bridge.c -lws2_32 -ladvapi32 -o kpxc-bridge.exe
 ```
 
-Or MinGW:
-```bash
+Or with MSVC (`cl`) / MinGW (`gcc`) on Windows:
+```cmd
+cl /O2 /W4 bridge\kpxc-bridge.c /Fe:kpxc-bridge.exe ws2_32.lib advapi32.lib
 gcc -O2 -Wall -o kpxc-bridge.exe bridge/kpxc-bridge.c -lws2_32 -ladvapi32
 ```
 

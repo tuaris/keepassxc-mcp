@@ -2,103 +2,52 @@ name: Build Windows Bridge
 
 on:
   push:
-    branches: [master]
-    paths:
-      - 'bridge/**'
-      - '.forgejo/workflows/build-bridge.yml'
+    tags: ['v*']
   workflow_dispatch:
 
 jobs:
   build-and-release:
-    runs-on: windows
+    runs-on: FreeBSD-15.0
     steps:
       - name: Checkout
-        shell: powershell
         run: |
-          $archiveUrl = "$env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/archive/$env:GITHUB_REF_NAME.zip"
-          Write-Host "Downloading $archiveUrl"
-          Invoke-WebRequest -Uri $archiveUrl -OutFile repo.zip
-          Expand-Archive -Path repo.zip -DestinationPath .
-          $extracted = Get-ChildItem -Directory | Where-Object { $_.Name -like "keepassxc-mcp*" } | Select-Object -First 1
-          Copy-Item -Path "$($extracted.FullName)\*" -Destination . -Recurse -Force
-          Remove-Item -Recurse -Force $extracted.FullName, repo.zip
-          Write-Host "Files:"
-          Get-ChildItem -Name
-
-      - name: Install Zig
-        shell: powershell
-        run: |
-          [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-          # Bypass SSL validation (runner has minimal CA store)
-          if (-not ([System.Management.Automation.PSTypeName]'TrustAll').Type) {
-            Add-Type @"
-              using System.Net;
-              using System.Net.Security;
-              using System.Security.Cryptography.X509Certificates;
-              public class TrustAll {
-                public static void Enable() {
-                  ServicePointManager.ServerCertificateValidationCallback =
-                    delegate { return true; };
-                }
-              }
-          "@
-          }
-          [TrustAll]::Enable()
-          $zigVersion = "0.14.0"
-          $zigUrl = "https://ziglang.org/download/$zigVersion/zig-windows-x86_64-$zigVersion.zip"
-          Write-Host "Downloading Zig $zigVersion..."
-          Invoke-WebRequest -Uri $zigUrl -OutFile zig.zip -UseBasicParsing
-          Expand-Archive -Path zig.zip -DestinationPath .
-          Rename-Item "zig-windows-x86_64-$zigVersion" zig
-          .\zig\zig.exe version
+          cd "$GITHUB_WORKSPACE"
+          rm -rf ./* ./.??*
+          curl -sLo repo.tar.gz "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/archive/$GITHUB_REF_NAME.tar.gz"
+          tar xf repo.tar.gz --strip-components=1
+          rm repo.tar.gz
 
       - name: Build kpxc-bridge.exe
-        shell: cmd
         run: |
-          zig\zig.exe cc -O2 bridge/kpxc-bridge.c -lws2_32 -ladvapi32 -o kpxc-bridge.exe
-          if not exist kpxc-bridge.exe exit /b 1
-          echo Build successful
+          zig cc -O2 -target x86_64-windows-gnu bridge/kpxc-bridge.c -lws2_32 -ladvapi32 -o kpxc-bridge.exe
+          file kpxc-bridge.exe
+          ls -l kpxc-bridge.exe
 
       - name: Publish release
-        shell: powershell
         env:
           FORGEJO_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          $repo = "${{ github.repository }}"
-          $baseUrl = "${{ github.server_url }}/api/v1/repos/$repo"
-          $headers = @{ "Authorization" = "token $env:FORGEJO_TOKEN"; "Content-Type" = "application/json" }
-          $tag = "latest"
+          REPO="$GITHUB_REPOSITORY"
+          BASE_URL="$GITHUB_SERVER_URL/api/v1/repos/$REPO"
+          TAG="$GITHUB_REF_NAME"
+          AUTH="Authorization: token $FORGEJO_TOKEN"
 
-          # Delete existing release if present
-          try {
-            $existing = Invoke-RestMethod -Uri "$baseUrl/releases/tags/$tag" -Headers $headers -Method Get -ErrorAction SilentlyContinue
-            if ($existing.id) {
-              Invoke-RestMethod -Uri "$baseUrl/releases/$($existing.id)" -Headers $headers -Method Delete
-            }
-          } catch {}
-
-          # Delete existing tag if present
-          try {
-            Invoke-RestMethod -Uri "$baseUrl/tags/$tag" -Headers $headers -Method Delete -ErrorAction SilentlyContinue
-          } catch {}
+          # Delete existing release for this tag if present
+          EXISTING_ID=$(curl -sf -H "$AUTH" "$BASE_URL/releases/tags/$TAG" | python3 -c "import sys,json; print(json.load(sys.stdin).get('id',''))" 2>/dev/null || true)
+          if [ -n "$EXISTING_ID" ]; then
+            curl -sf -X DELETE -H "$AUTH" "$BASE_URL/releases/$EXISTING_ID"
+            echo "Deleted existing release $EXISTING_ID"
+          fi
 
           # Create release
-          $body = @{
-            tag_name = $tag
-            name = "Latest Build"
-            body = "Automated build of kpxc-bridge.exe from master branch.`n`nCommit: ${{ github.sha }}"
-            draft = $false
-            prerelease = $false
-            target_commitish = "master"
-          } | ConvertTo-Json
-
-          $release = Invoke-RestMethod -Uri "$baseUrl/releases" -Headers $headers -Method Post -Body $body
-          $releaseId = $release.id
-          Write-Host "Release ID: $releaseId"
+          RELEASE_ID=$(curl -sf -X POST -H "$AUTH" -H "Content-Type: application/json" \
+            -d "{\"tag_name\":\"$TAG\",\"name\":\"$TAG\",\"body\":\"kpxc-bridge.exe for Windows x86_64.\\n\\nCommit: $GITHUB_SHA\",\"draft\":false,\"prerelease\":false}" \
+            "$BASE_URL/releases" | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
+          echo "Created release $RELEASE_ID"
 
           # Upload binary
-          $uploadUrl = "$baseUrl/releases/$releaseId/assets?name=kpxc-bridge.exe"
-          $uploadHeaders = @{ "Authorization" = "token $env:FORGEJO_TOKEN"; "Content-Type" = "application/octet-stream" }
-          Invoke-RestMethod -Uri $uploadUrl -Headers $uploadHeaders -Method Post -InFile "kpxc-bridge.exe"
-
-          Write-Host "Release created with kpxc-bridge.exe attached"
+          curl -sf -X POST -H "Authorization: token $FORGEJO_TOKEN" \
+            -H "Content-Type: application/octet-stream" \
+            --data-binary @kpxc-bridge.exe \
+            "$BASE_URL/releases/$RELEASE_ID/assets?name=kpxc-bridge.exe"
+          echo "Uploaded kpxc-bridge.exe to release $TAG"
