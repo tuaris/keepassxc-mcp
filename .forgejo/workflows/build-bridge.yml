@@ -15,24 +15,15 @@ jobs:
       - name: Checkout
         shell: powershell
         run: |
-          Write-Host "Workspace: $(Get-Location)"
-          Write-Host "Contents: $(Get-ChildItem -Force | Select-Object -ExpandProperty Name)"
-          Write-Host "GITHUB_SERVER_URL: $env:GITHUB_SERVER_URL"
-          Write-Host "GITHUB_REPOSITORY: $env:GITHUB_REPOSITORY"
-          Write-Host "GITHUB_REF_NAME: $env:GITHUB_REF_NAME"
-          $url = "$env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY"
-          Write-Host "Clone URL: $url"
-          if (Test-Path ".git") {
-            Write-Host "Existing repo found, fetching..."
-            git fetch origin $env:GITHUB_REF_NAME --depth 1
-            git checkout FETCH_HEAD
-          } else {
-            # Clean workspace if non-empty
-            Get-ChildItem -Force | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
-            git clone --depth 1 --branch $env:GITHUB_REF_NAME "$url" .
-          }
-          Write-Host "Files after checkout:"
-          Get-ChildItem -Name bridge
+          $archiveUrl = "$env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/archive/$env:GITHUB_REF_NAME.zip"
+          Write-Host "Downloading $archiveUrl"
+          Invoke-WebRequest -Uri $archiveUrl -OutFile repo.zip
+          Expand-Archive -Path repo.zip -DestinationPath .
+          $extracted = Get-ChildItem -Directory | Where-Object { $_.Name -like "keepassxc-mcp*" } | Select-Object -First 1
+          Copy-Item -Path "$($extracted.FullName)\*" -Destination . -Recurse -Force
+          Remove-Item -Recurse -Force $extracted.FullName, repo.zip
+          Write-Host "Files:"
+          Get-ChildItem -Name
 
       - name: Install Zig
         shell: powershell
