@@ -29,6 +29,21 @@ jobs:
         shell: powershell
         run: |
           [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+          # Bypass SSL validation (runner has minimal CA store)
+          if (-not ([System.Management.Automation.PSTypeName]'TrustAll').Type) {
+            Add-Type @"
+              using System.Net;
+              using System.Net.Security;
+              using System.Security.Cryptography.X509Certificates;
+              public class TrustAll {
+                public static void Enable() {
+                  ServicePointManager.ServerCertificateValidationCallback =
+                    delegate { return true; };
+                }
+              }
+          "@
+          }
+          [TrustAll]::Enable()
           $zigVersion = "0.14.0"
           $zigUrl = "https://ziglang.org/download/$zigVersion/zig-windows-x86_64-$zigVersion.zip"
           Write-Host "Downloading Zig $zigVersion..."
