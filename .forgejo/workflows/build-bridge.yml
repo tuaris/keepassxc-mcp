@@ -13,8 +13,26 @@ jobs:
     runs-on: windows
     steps:
       - name: Checkout
-        shell: cmd
-        run: git clone --depth 1 --branch %GITHUB_REF_NAME% %GITHUB_SERVER_URL%/%GITHUB_REPOSITORY%.git .
+        shell: powershell
+        run: |
+          Write-Host "Workspace: $(Get-Location)"
+          Write-Host "Contents: $(Get-ChildItem -Force | Select-Object -ExpandProperty Name)"
+          Write-Host "GITHUB_SERVER_URL: $env:GITHUB_SERVER_URL"
+          Write-Host "GITHUB_REPOSITORY: $env:GITHUB_REPOSITORY"
+          Write-Host "GITHUB_REF_NAME: $env:GITHUB_REF_NAME"
+          $url = "$env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY"
+          Write-Host "Clone URL: $url"
+          if (Test-Path ".git") {
+            Write-Host "Existing repo found, fetching..."
+            git fetch origin $env:GITHUB_REF_NAME --depth 1
+            git checkout FETCH_HEAD
+          } else {
+            # Clean workspace if non-empty
+            Get-ChildItem -Force | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+            git clone --depth 1 --branch $env:GITHUB_REF_NAME "$url" .
+          }
+          Write-Host "Files after checkout:"
+          Get-ChildItem -Name bridge
 
       - name: Install Zig
         shell: powershell
