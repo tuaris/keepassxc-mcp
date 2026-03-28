@@ -1,0 +1,89 @@
+name: Build Windows Bridge
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'bridge/**'
+      - '.forgejo/workflows/build-bridge.yml'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Zig
+        shell: powershell
+        run: |
+          $zigVersion = "0.14.0"
+          $zigUrl = "https://ziglang.org/download/$zigVersion/zig-windows-x86_64-$zigVersion.zip"
+          Invoke-WebRequest -Uri $zigUrl -OutFile zig.zip
+          Expand-Archive -Path zig.zip -DestinationPath .
+          Rename-Item "zig-windows-x86_64-$zigVersion" zig
+
+      - name: Build kpxc-bridge.exe
+        shell: cmd
+        run: |
+          zig\zig.exe cc -O2 -Wall bridge/kpxc-bridge.c -lws2_32 -ladvapi32 -o kpxc-bridge.exe
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: kpxc-bridge-windows-x86_64
+          path: kpxc-bridge.exe
+
+  release:
+    needs: build
+    runs-on: windows
+    if: github.ref == 'refs/heads/master'
+    steps:
+      - name: Download artifact
+        uses: actions/download-artifact@v3
+        with:
+          name: kpxc-bridge-windows-x86_64
+
+      - name: Create or update release
+        shell: powershell
+        env:
+          FORGEJO_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $repo = "${{ github.repository }}"
+          $baseUrl = "${{ github.server_url }}/api/v1/repos/$repo"
+          $headers = @{ "Authorization" = "token $env:FORGEJO_TOKEN"; "Content-Type" = "application/json" }
+          $tag = "latest"
+
+          # Delete existing release if present
+          try {
+            $existing = Invoke-RestMethod -Uri "$baseUrl/releases/tags/$tag" -Headers $headers -Method Get -ErrorAction SilentlyContinue
+            if ($existing.id) {
+              Invoke-RestMethod -Uri "$baseUrl/releases/$($existing.id)" -Headers $headers -Method Delete
+            }
+          } catch {}
+
+          # Delete existing tag if present
+          try {
+            Invoke-RestMethod -Uri "$baseUrl/tags/$tag" -Headers $headers -Method Delete -ErrorAction SilentlyContinue
+          } catch {}
+
+          # Create release
+          $body = @{
+            tag_name = $tag
+            name = "Latest Build"
+            body = "Automated build of kpxc-bridge.exe from master branch.`n`nCommit: ${{ github.sha }}"
+            draft = $false
+            prerelease = $false
+            target_commitish = "master"
+          } | ConvertTo-Json
+
+          $release = Invoke-RestMethod -Uri "$baseUrl/releases" -Headers $headers -Method Post -Body $body
+          $releaseId = $release.id
+
+          # Upload binary
+          $uploadUrl = "$baseUrl/releases/$releaseId/assets?name=kpxc-bridge.exe"
+          $uploadHeaders = @{ "Authorization" = "token $env:FORGEJO_TOKEN"; "Content-Type" = "application/octet-stream" }
+          Invoke-RestMethod -Uri $uploadUrl -Headers $uploadHeaders -Method Post -InFile "kpxc-bridge.exe"
+
+          Write-Host "Release created with kpxc-bridge.exe attached"
