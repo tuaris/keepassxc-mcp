@@ -9,43 +9,35 @@ on:
   workflow_dispatch:
 
 jobs:
-  build:
+  build-and-release:
     runs-on: windows
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        shell: powershell
+        run: |
+          git clone --depth 1 --branch ${{ github.ref_name }} ${{ github.server_url }}/${{ github.repository }}.git src
+          Copy-Item -Recurse src\* .
+          Remove-Item -Recurse -Force src
 
       - name: Install Zig
         shell: powershell
         run: |
           $zigVersion = "0.14.0"
           $zigUrl = "https://ziglang.org/download/$zigVersion/zig-windows-x86_64-$zigVersion.zip"
+          Write-Host "Downloading Zig $zigVersion..."
           Invoke-WebRequest -Uri $zigUrl -OutFile zig.zip
           Expand-Archive -Path zig.zip -DestinationPath .
           Rename-Item "zig-windows-x86_64-$zigVersion" zig
+          .\zig\zig.exe version
 
       - name: Build kpxc-bridge.exe
         shell: cmd
         run: |
-          zig\zig.exe cc -O2 -Wall bridge/kpxc-bridge.c -lws2_32 -ladvapi32 -o kpxc-bridge.exe
+          zig\zig.exe cc -O2 bridge/kpxc-bridge.c -lws2_32 -ladvapi32 -o kpxc-bridge.exe
+          if not exist kpxc-bridge.exe exit /b 1
+          echo Build successful
 
-      - name: Upload artifact
-        uses: actions/upload-artifact@v3
-        with:
-          name: kpxc-bridge-windows-x86_64
-          path: kpxc-bridge.exe
-
-  release:
-    needs: build
-    runs-on: windows
-    if: github.ref == 'refs/heads/master'
-    steps:
-      - name: Download artifact
-        uses: actions/download-artifact@v3
-        with:
-          name: kpxc-bridge-windows-x86_64
-
-      - name: Create or update release
+      - name: Publish release
         shell: powershell
         env:
           FORGEJO_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -80,6 +72,7 @@ jobs:
 
           $release = Invoke-RestMethod -Uri "$baseUrl/releases" -Headers $headers -Method Post -Body $body
           $releaseId = $release.id
+          Write-Host "Release ID: $releaseId"
 
           # Upload binary
           $uploadUrl = "$baseUrl/releases/$releaseId/assets?name=kpxc-bridge.exe"
