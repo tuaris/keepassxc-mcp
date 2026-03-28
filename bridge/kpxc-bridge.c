@@ -92,12 +92,48 @@ typedef struct {
     HANDLE        h_pipe_to_tcp;   /* thread handle for CancelSynchronousIo */
 } ConnCtx;
 
+/*
+ * Overlapped helper: issue an async I/O and wait for completion.
+ * Returns TRUE on success (bytes transferred stored in *pN), FALSE on error.
+ */
+static BOOL overlapped_io_read(HANDLE h, void *buf, DWORD bufsize, DWORD *pN,
+                               HANDLE hEvent)
+{
+    OVERLAPPED ov = {0};
+    ov.hEvent = hEvent;
+    *pN = 0;
+    if (ReadFile(h, buf, bufsize, pN, &ov))
+        return TRUE;                       /* completed immediately */
+    if (GetLastError() != ERROR_IO_PENDING)
+        return FALSE;
+    /* Wait for the async operation */
+    if (!GetOverlappedResult(h, &ov, pN, TRUE))
+        return FALSE;
+    return TRUE;
+}
+
+static BOOL overlapped_io_write(HANDLE h, const void *buf, DWORD len,
+                                DWORD *pN, HANDLE hEvent)
+{
+    OVERLAPPED ov = {0};
+    ov.hEvent = hEvent;
+    *pN = 0;
+    if (WriteFile(h, buf, len, pN, &ov))
+        return TRUE;
+    if (GetLastError() != ERROR_IO_PENDING)
+        return FALSE;
+    if (!GetOverlappedResult(h, &ov, pN, TRUE))
+        return FALSE;
+    return TRUE;
+}
+
 /* Forward: TCP -> Named Pipe */
 static DWORD WINAPI tcp_to_pipe_thread(LPVOID param)
 {
     ConnCtx *ctx = (ConnCtx *)param;
     char buf[BUFFER_SIZE];
     int msg_count = 0;
+    HANDLE hEvent = CreateEvent(NULL, TRUE, FALSE, NULL);
 
     while (InterlockedCompareExchange(&ctx->alive, 1, 1)) {
         int n = recv(ctx->tcp_sock, buf, sizeof(buf), 0);
@@ -110,8 +146,8 @@ static DWORD WINAPI tcp_to_pipe_thread(LPVOID param)
 
         DWORD written, total = 0;
         while (total < (DWORD)n) {
-            if (!WriteFile(ctx->pipe_handle, buf + total,
-                           (DWORD)n - total, &written, NULL)) {
+            if (!overlapped_io_write(ctx->pipe_handle, buf + total,
+                                     (DWORD)n - total, &written, hEvent)) {
                 logmsg("tcp->pipe: WriteFile failed: error %lu", GetLastError());
                 goto done;
             }
@@ -122,9 +158,9 @@ static DWORD WINAPI tcp_to_pipe_thread(LPVOID param)
 done:
     logmsg("tcp->pipe: thread exiting (msg_count=%d)", msg_count);
     InterlockedExchange(&ctx->alive, 0);
-    if (ctx->h_pipe_to_tcp)
-        CancelSynchronousIo(ctx->h_pipe_to_tcp);
-    DisconnectNamedPipe(ctx->pipe_handle);
+    /* Cancel the pipe_to_tcp thread's pending ReadFile */
+    CancelIoEx(ctx->pipe_handle, NULL);
+    CloseHandle(hEvent);
     return 0;
 }
 
@@ -134,13 +170,13 @@ static DWORD WINAPI pipe_to_tcp_thread(LPVOID param)
     ConnCtx *ctx = (ConnCtx *)param;
     char buf[BUFFER_SIZE];
     int msg_count = 0;
+    HANDLE hEvent = CreateEvent(NULL, TRUE, FALSE, NULL);
 
     while (InterlockedCompareExchange(&ctx->alive, 1, 1)) {
         DWORD n = 0;
-        BOOL ok = ReadFile(ctx->pipe_handle, buf, sizeof(buf), &n, NULL);
-        if (!ok || n == 0) {
-            logmsg("pipe->tcp: ReadFile returned ok=%d n=%lu err=%lu",
-                   ok, n, GetLastError());
+        if (!overlapped_io_read(ctx->pipe_handle, buf, sizeof(buf),
+                                &n, hEvent) || n == 0) {
+            logmsg("pipe->tcp: ReadFile err=%lu n=%lu", GetLastError(), n);
             break;
         }
         msg_count++;
@@ -161,8 +197,8 @@ done:
     logmsg("pipe->tcp: thread exiting (msg_count=%d)", msg_count);
     InterlockedExchange(&ctx->alive, 0);
     shutdown(ctx->tcp_sock, SD_BOTH);
-    if (ctx->h_tcp_to_pipe)
-        CancelSynchronousIo(ctx->h_tcp_to_pipe);
+    CancelIoEx(ctx->pipe_handle, NULL);
+    CloseHandle(hEvent);
     return 0;
 }
 
@@ -211,7 +247,7 @@ static DWORD WINAPI handle_connection(LPVOID param)
         0,             /* no sharing */
         NULL,          /* default security */
         OPEN_EXISTING,
-        SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION,
+        FILE_FLAG_OVERLAPPED | SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION,
         NULL);
 
     if (pipe == INVALID_HANDLE_VALUE) {
