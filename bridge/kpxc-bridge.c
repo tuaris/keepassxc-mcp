@@ -88,6 +88,8 @@ typedef struct {
     SOCKET        tcp_sock;
     HANDLE        pipe_handle;
     volatile LONG alive;
+    HANDLE        h_tcp_to_pipe;   /* thread handle for CancelSynchronousIo */
+    HANDLE        h_pipe_to_tcp;   /* thread handle for CancelSynchronousIo */
 } ConnCtx;
 
 /* Forward: TCP -> Named Pipe */
@@ -95,24 +97,34 @@ static DWORD WINAPI tcp_to_pipe_thread(LPVOID param)
 {
     ConnCtx *ctx = (ConnCtx *)param;
     char buf[BUFFER_SIZE];
+    int msg_count = 0;
 
     while (InterlockedCompareExchange(&ctx->alive, 1, 1)) {
         int n = recv(ctx->tcp_sock, buf, sizeof(buf), 0);
-        if (n <= 0)
+        if (n <= 0) {
+            logmsg("tcp->pipe: recv returned %d (WSA %d)", n, WSAGetLastError());
             break;
+        }
+        msg_count++;
+        logmsg("tcp->pipe: recv %d bytes (msg #%d)", n, msg_count);
 
         DWORD written, total = 0;
         while (total < (DWORD)n) {
             if (!WriteFile(ctx->pipe_handle, buf + total,
-                           (DWORD)n - total, &written, NULL))
+                           (DWORD)n - total, &written, NULL)) {
+                logmsg("tcp->pipe: WriteFile failed: error %lu", GetLastError());
                 goto done;
+            }
             total += written;
         }
+        logmsg("tcp->pipe: wrote %lu bytes to pipe", total);
     }
 done:
+    logmsg("tcp->pipe: thread exiting (msg_count=%d)", msg_count);
     InterlockedExchange(&ctx->alive, 0);
-    /* Unblock the pipe read in the other thread */
-    CancelIoEx(ctx->pipe_handle, NULL);
+    if (ctx->h_pipe_to_tcp)
+        CancelSynchronousIo(ctx->h_pipe_to_tcp);
+    DisconnectNamedPipe(ctx->pipe_handle);
     return 0;
 }
 
@@ -121,24 +133,36 @@ static DWORD WINAPI pipe_to_tcp_thread(LPVOID param)
 {
     ConnCtx *ctx = (ConnCtx *)param;
     char buf[BUFFER_SIZE];
+    int msg_count = 0;
 
     while (InterlockedCompareExchange(&ctx->alive, 1, 1)) {
         DWORD n = 0;
-        if (!ReadFile(ctx->pipe_handle, buf, sizeof(buf), &n, NULL) || n == 0)
+        BOOL ok = ReadFile(ctx->pipe_handle, buf, sizeof(buf), &n, NULL);
+        if (!ok || n == 0) {
+            logmsg("pipe->tcp: ReadFile returned ok=%d n=%lu err=%lu",
+                   ok, n, GetLastError());
             break;
+        }
+        msg_count++;
+        logmsg("pipe->tcp: read %lu bytes from pipe (msg #%d)", n, msg_count);
 
         int total = 0;
         while (total < (int)n) {
             int sent = send(ctx->tcp_sock, buf + total, (int)n - total, 0);
-            if (sent <= 0)
+            if (sent <= 0) {
+                logmsg("pipe->tcp: send failed: WSA %d", WSAGetLastError());
                 goto done;
+            }
             total += sent;
         }
+        logmsg("pipe->tcp: sent %d bytes to TCP", total);
     }
 done:
+    logmsg("pipe->tcp: thread exiting (msg_count=%d)", msg_count);
     InterlockedExchange(&ctx->alive, 0);
-    /* Unblock the recv() in the other thread */
     shutdown(ctx->tcp_sock, SD_BOTH);
+    if (ctx->h_tcp_to_pipe)
+        CancelSynchronousIo(ctx->h_tcp_to_pipe);
     return 0;
 }
 
@@ -203,12 +227,16 @@ static DWORD WINAPI handle_connection(LPVOID param)
     logmsg("Pipe connected — forwarding traffic");
 
     ConnCtx ctx;
-    ctx.tcp_sock    = tcp_sock;
-    ctx.pipe_handle = pipe;
-    ctx.alive       = 1;
+    ctx.tcp_sock       = tcp_sock;
+    ctx.pipe_handle    = pipe;
+    ctx.alive          = 1;
+    ctx.h_tcp_to_pipe  = NULL;
+    ctx.h_pipe_to_tcp  = NULL;
 
     HANDLE t1 = CreateThread(NULL, 0, tcp_to_pipe_thread, &ctx, 0, NULL);
     HANDLE t2 = CreateThread(NULL, 0, pipe_to_tcp_thread, &ctx, 0, NULL);
+    ctx.h_tcp_to_pipe = t1;
+    ctx.h_pipe_to_tcp = t2;
 
     if (!t1 || !t2) {
         logmsg("ERROR: CreateThread failed: %lu", GetLastError());

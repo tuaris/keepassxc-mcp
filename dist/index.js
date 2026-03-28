@@ -2,12 +2,9 @@
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { CallToolRequestSchema, ListToolsRequestSchema, } from "@modelcontextprotocol/sdk/types.js";
-import nacl from "tweetnacl";
-import net from "node:net";
-import fs from "node:fs";
+import { spawn } from "node:child_process";
+import * as readline from "node:readline";
 import path from "node:path";
-import os from "node:os";
-import crypto from "node:crypto";
 // ---------------------------------------------------------------------------
 // Logging (stderr only — stdout is reserved for MCP JSON-RPC)
 // ---------------------------------------------------------------------------
@@ -15,396 +12,112 @@ function log(msg) {
     process.stderr.write(`[keepassxc-mcp] ${msg}\n`);
 }
 // ---------------------------------------------------------------------------
-// Base64 helpers (avoid extra dependency on tweetnacl-util)
-// ---------------------------------------------------------------------------
-function toBase64(data) {
-    return Buffer.from(data).toString("base64");
-}
-function fromBase64(str) {
-    return new Uint8Array(Buffer.from(str, "base64"));
-}
-// ---------------------------------------------------------------------------
-// Configuration — all via environment variables
-// ---------------------------------------------------------------------------
-function getDefaultSocketPath() {
-    const xdg = process.env.XDG_RUNTIME_DIR;
-    if (xdg)
-        return path.join(xdg, "kpxc_server");
-    if (process.platform === "darwin") {
-        return path.join(process.env.TMPDIR || "/tmp", "kpxc_server");
-    }
-    const uid = process.getuid?.() ?? 1000;
-    return `/run/user/${uid}/kpxc_server`;
-}
-const SOCKET_PATH = process.env.KEEPASSXC_SOCKET || getDefaultSocketPath();
-const TCP_HOST = process.env.KEEPASSXC_HOST;
-const TCP_PORT = process.env.KEEPASSXC_PORT
-    ? parseInt(process.env.KEEPASSXC_PORT, 10)
-    : undefined;
-const IDENTITY_FILE = process.env.KEEPASSXC_IDENTITY ||
-    path.join(os.homedir(), ".local", "share", "keepassxc-mcp", "identity.json");
-const RESPONSE_TIMEOUT = parseInt(process.env.KEEPASSXC_TIMEOUT || "30000", 10);
-function loadIdentity() {
-    try {
-        if (fs.existsSync(IDENTITY_FILE)) {
-            const data = JSON.parse(fs.readFileSync(IDENTITY_FILE, "utf-8"));
-            if (data.id && data.idKey && data.secretKey)
-                return data;
-        }
-    }
-    catch {
-        log("Warning: failed to load identity file");
-    }
-    return null;
-}
-function saveIdentity(identity) {
-    const dir = path.dirname(IDENTITY_FILE);
-    fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(IDENTITY_FILE, JSON.stringify(identity, null, 2), {
-        mode: 0o600,
-    });
-    log(`Identity saved to ${IDENTITY_FILE}`);
-}
-// ---------------------------------------------------------------------------
-// KeePassXC protocol client
+// KeePassXC protocol client — thin wrapper around kpxc-client.py
 //
-// Implements the keepassxc-browser protocol over a Unix domain socket or TCP.
-// Encryption uses TweetNaCl box (X25519 + XSalsa20-Poly1305), matching the
-// browser extension's use of TweetNaCl.js.
-//
-// Three key pairs are involved:
-//   1. Session key pair (ephemeral, per-connection)
-//   2. Server/host key pair (ephemeral, per-connection, from KeePassXC)
-//   3. Identification key pair (persistent, stored in identity file)
+// All TCP, encryption, identity, and protocol logic lives in the Python
+// subprocess.  This class just sends JSON commands and reads JSON responses.
 // ---------------------------------------------------------------------------
 class KeePassXCClient {
-    socket = null;
-    sessionKeyPair;
-    serverPublicKey = null;
-    clientID;
-    identity = null;
-    connected = false;
-    // Response buffering (socket is stream-oriented)
-    buffer = "";
-    pendingResolve = null;
-    pendingReject = null;
-    pendingTimer = null;
-    constructor() {
-        this.newSession();
-        this.identity = loadIdentity();
-    }
-    /** Generate fresh ephemeral session keys + clientID */
-    newSession() {
-        this.sessionKeyPair = nacl.box.keyPair();
-        this.clientID = toBase64(new Uint8Array(crypto.randomBytes(24)));
-        this.serverPublicKey = null;
-    }
-    // ---- Connection management ------------------------------------------------
-    async connect() {
-        if (this.connected && this.socket)
+    proc = null;
+    rl = null;
+    pending = null;
+    ensureProc() {
+        if (this.proc && !this.proc.killed)
             return;
-        this.cleanup();
-        this.newSession();
-        return new Promise((resolve, reject) => {
-            const onConnectError = (err) => {
-                this.cleanup();
-                reject(new Error(`Connection failed: ${err.message}`));
-            };
-            if (TCP_HOST && TCP_PORT) {
-                log(`Connecting to TCP ${TCP_HOST}:${TCP_PORT}`);
-                this.socket = net.createConnection({
-                    host: TCP_HOST,
-                    port: TCP_PORT,
-                });
-            }
-            else {
-                log(`Connecting to socket ${SOCKET_PATH}`);
-                this.socket = net.createConnection({ path: SOCKET_PATH });
-            }
-            this.socket.once("error", onConnectError);
-            this.socket.on("data", (chunk) => {
-                this.buffer += chunk.toString("utf-8");
-                this.tryResolve();
-            });
-            this.socket.on("close", () => {
-                log("Socket closed");
-                const r = this.pendingReject;
-                this.clearPending();
-                this.cleanup();
-                if (r)
-                    r(new Error("Connection closed unexpectedly"));
-            });
-            this.socket.on("connect", () => {
-                this.connected = true;
-                // Replace the one-shot error handler with a persistent one
-                this.socket.removeListener("error", onConnectError);
-                this.socket.on("error", (err) => {
-                    log(`Socket error: ${err.message}`);
-                    const r = this.pendingReject;
-                    this.clearPending();
-                    this.cleanup();
-                    if (r)
-                        r(err);
-                });
-                log("Connected");
-                resolve();
-            });
+        const script = path.join(path.dirname(new URL(import.meta.url).pathname), "kpxc-client.py");
+        this.proc = spawn("python3", ["-u", script], {
+            stdio: ["pipe", "pipe", "pipe"],
+            env: process.env,
         });
+        this.proc.stderr.on("data", (chunk) => {
+            // Forward Python client logs to our stderr
+            for (const line of chunk.toString().split("\n")) {
+                if (line.trim())
+                    process.stderr.write(`${line}\n`);
+            }
+        });
+        this.proc.on("close", (code) => {
+            log(`kpxc-client exited with code ${code}`);
+            if (this.pending) {
+                this.pending.reject(new Error("kpxc-client process exited"));
+                this.pending = null;
+            }
+            this.proc = null;
+            this.rl = null;
+        });
+        this.rl = readline.createInterface({ input: this.proc.stdout });
+        this.rl.on("line", (line) => {
+            if (!this.pending)
+                return;
+            try {
+                const data = JSON.parse(line);
+                const p = this.pending;
+                this.pending = null;
+                if (data.ok) {
+                    p.resolve(data);
+                }
+                else {
+                    p.reject(new Error(data.error || "Unknown error from kpxc-client"));
+                }
+            }
+            catch {
+                // Incomplete or invalid — ignore
+            }
+        });
+        log("kpxc-client subprocess started");
     }
-    tryResolve() {
-        if (!this.pendingResolve)
-            return;
-        try {
-            const parsed = JSON.parse(this.buffer);
-            this.buffer = "";
-            const resolve = this.pendingResolve;
-            this.clearPending();
-            resolve(parsed);
-        }
-        catch {
-            // Incomplete JSON — keep buffering
-        }
-    }
-    clearPending() {
-        this.pendingResolve = null;
-        this.pendingReject = null;
-        if (this.pendingTimer) {
-            clearTimeout(this.pendingTimer);
-            this.pendingTimer = null;
-        }
-    }
-    cleanup() {
-        this.connected = false;
-        this.serverPublicKey = null;
-        this.clearPending();
-        if (this.socket) {
-            this.socket.removeAllListeners();
-            this.socket.destroy();
-            this.socket = null;
-        }
+    send(cmd) {
+        return new Promise((resolve, reject) => {
+            this.ensureProc();
+            if (this.pending) {
+                return reject(new Error("Another request is already in flight"));
+            }
+            this.pending = { resolve, reject };
+            const line = JSON.stringify(cmd) + "\n";
+            this.proc.stdin.write(line);
+        });
     }
     disconnect() {
-        this.cleanup();
-    }
-    // ---- Low-level send/receive -----------------------------------------------
-    sendAndReceive(data, timeout) {
-        return new Promise((resolve, reject) => {
-            if (!this.socket || !this.connected) {
-                return reject(new Error("Not connected to KeePassXC"));
-            }
-            this.pendingResolve = resolve;
-            this.pendingReject = reject;
-            this.pendingTimer = setTimeout(() => {
-                const r = this.pendingReject;
-                this.clearPending();
-                if (r)
-                    r(new Error("Response timeout"));
-            }, timeout ?? RESPONSE_TIMEOUT);
-            this.socket.write(JSON.stringify(data) + "\n");
-        });
-    }
-    // ---- Encryption / decryption ----------------------------------------------
-    encrypt(payload) {
-        if (!this.serverPublicKey)
-            throw new Error("No server public key — run exchangeKeys first");
-        const nonce = new Uint8Array(crypto.randomBytes(24));
-        const plaintext = new TextEncoder().encode(JSON.stringify(payload));
-        const box = nacl.box(plaintext, nonce, this.serverPublicKey, this.sessionKeyPair.secretKey);
-        if (!box)
-            throw new Error("NaCl box encryption failed");
-        return { message: toBase64(box), nonce: toBase64(nonce) };
-    }
-    decrypt(messageB64, nonceB64) {
-        if (!this.serverPublicKey)
-            throw new Error("No server public key");
-        const opened = nacl.box.open(fromBase64(messageB64), fromBase64(nonceB64), this.serverPublicKey, this.sessionKeyPair.secretKey);
-        if (!opened)
-            throw new Error("NaCl box decryption failed (wrong keys?)");
-        return JSON.parse(new TextDecoder().decode(opened));
-    }
-    // ---- Protocol actions -----------------------------------------------------
-    /** Step 1: Exchange ephemeral public keys (plaintext) */
-    async exchangeKeys() {
-        await this.connect();
-        const nonce = toBase64(new Uint8Array(crypto.randomBytes(24)));
-        const resp = await this.sendAndReceive({
-            action: "change-public-keys",
-            publicKey: toBase64(this.sessionKeyPair.publicKey),
-            nonce,
-            clientID: this.clientID,
-        });
-        if (resp.success !== "true") {
-            throw new Error(`Key exchange failed: ${JSON.stringify(resp)}`);
+        if (this.proc && !this.proc.killed) {
+            this.proc.stdin.end();
+            this.proc.kill();
         }
-        this.serverPublicKey = fromBase64(resp.publicKey);
-        log("Key exchange complete");
-    }
-    /** Send an encrypted action and return the decrypted response */
-    async sendEncrypted(action, payload = {}) {
-        if (!this.serverPublicKey)
-            await this.exchangeKeys();
-        const { message, nonce } = this.encrypt({ action, ...payload });
-        const resp = await this.sendAndReceive({
-            action,
-            message,
-            nonce,
-            clientID: this.clientID,
-        });
-        // Unencrypted error
-        if (resp.error && !resp.message) {
-            throw new Error(`KeePassXC error: ${resp.error} (code: ${resp.errorCode ?? "?"})`);
-        }
-        // Encrypted response
-        if (resp.message && resp.nonce) {
-            return this.decrypt(resp.message, resp.nonce);
-        }
-        return resp;
-    }
-    /** Wrapped sendEncrypted that retries once on connection failure */
-    async request(action, payload = {}) {
-        try {
-            return await this.sendEncrypted(action, payload);
-        }
-        catch (err) {
-            if (err?.message?.includes("Not connected") ||
-                err?.message?.includes("Connection") ||
-                err?.message?.includes("closed")) {
-                log("Connection lost — reconnecting…");
-                this.cleanup();
-                return await this.sendEncrypted(action, payload);
-            }
-            throw err;
-        }
-    }
-    // ---- Association ----------------------------------------------------------
-    async associate() {
-        if (!this.serverPublicKey)
-            await this.exchangeKeys();
-        const idKeyPair = nacl.box.keyPair();
-        const result = await this.sendEncrypted("associate", {
-            key: toBase64(this.sessionKeyPair.publicKey),
-            idKey: toBase64(idKeyPair.publicKey),
-        });
-        if (result.success !== "true") {
-            throw new Error(`Association failed: ${JSON.stringify(result)}`);
-        }
-        const identity = {
-            id: result.id,
-            idKey: toBase64(idKeyPair.publicKey),
-            secretKey: toBase64(idKeyPair.secretKey),
-        };
-        saveIdentity(identity);
-        this.identity = identity;
-        log(`Associated as "${result.id}"`);
-        return result.id;
-    }
-    async testAssociate() {
-        if (!this.identity)
-            return false;
-        try {
-            const result = await this.sendEncrypted("test-associate", {
-                id: this.identity.id,
-                key: this.identity.idKey,
-            });
-            return result.success === "true";
-        }
-        catch {
-            return false;
-        }
-    }
-    /** Ensure we have an active, validated association */
-    async ensureAssociated() {
-        if (!this.serverPublicKey)
-            await this.exchangeKeys();
-        if (this.identity) {
-            if (await this.testAssociate()) {
-                log(`Association "${this.identity.id}" valid`);
-                return;
-            }
-            log("Stored association invalid — re-associating");
-        }
-        await this.associate();
-    }
-    /** Like ensureAssociated but with automatic reconnect on stale socket */
-    async ensureReady() {
-        try {
-            await this.ensureAssociated();
-        }
-        catch (err) {
-            if (err?.message?.includes("Not connected") ||
-                err?.message?.includes("Connection") ||
-                err?.message?.includes("closed")) {
-                log("Connection lost during readiness check — reconnecting…");
-                this.cleanup();
-                await this.ensureAssociated();
-                return;
-            }
-            throw err;
-        }
+        this.proc = null;
+        this.rl = null;
+        this.pending = null;
     }
     // ---- Public API (each maps to an MCP tool) --------------------------------
     async getLogins(url, submitUrl) {
-        await this.ensureReady();
-        const payload = {
-            url,
-            keys: [{ id: this.identity.id, key: this.identity.idKey }],
-        };
-        if (submitUrl)
-            payload.submitUrl = submitUrl;
-        return this.request("get-logins", payload);
+        const r = await this.send({ cmd: "get-logins", url, submitUrl });
+        return r.response;
     }
     async getTotp(uuid) {
-        await this.ensureReady();
-        return this.request("get-totp", { uuid });
+        const r = await this.send({ cmd: "get-totp", uuid });
+        return r.response;
     }
     async setLogin(params) {
-        await this.ensureReady();
-        return this.request("set-login", {
-            ...params,
-            id: this.identity.id,
-        });
+        const r = await this.send({ cmd: "set-login", params });
+        return r.response;
     }
     async generatePassword() {
-        // generate-password uses a slightly different request format:
-        // no encrypted message body, but the response IS encrypted.
-        if (!this.serverPublicKey)
-            await this.exchangeKeys();
-        const nonce = toBase64(new Uint8Array(crypto.randomBytes(24)));
-        const requestID = crypto.randomBytes(4).toString("hex");
-        const resp = await this.sendAndReceive({
-            action: "generate-password",
-            nonce,
-            clientID: this.clientID,
-            requestID,
-        }, 60000);
-        if (resp.message && resp.nonce) {
-            return this.decrypt(resp.message, resp.nonce);
-        }
-        if (resp.error) {
-            throw new Error(`KeePassXC error: ${resp.error} (code: ${resp.errorCode ?? "?"})`);
-        }
-        return resp;
+        const r = await this.send({ cmd: "generate-password" });
+        return r.response;
     }
     async lockDatabase() {
-        await this.ensureReady();
-        try {
-            return await this.request("lock-database");
-        }
-        catch (err) {
-            // lock-database "succeeds" by returning errorCode 1 / "Database not opened"
-            if (err?.message?.includes("Database not opened")) {
-                return { success: "true", locked: true };
-            }
-            throw err;
-        }
+        const r = await this.send({ cmd: "lock-database" });
+        return r.response;
     }
     async getDatabaseGroups() {
-        await this.ensureReady();
-        return this.request("get-database-groups");
+        const r = await this.send({ cmd: "get-database-groups" });
+        return r.response;
     }
     async getDatabaseHash() {
-        await this.ensureReady();
-        return this.request("get-databasehash");
+        const r = await this.send({ cmd: "get-databasehash" });
+        return r.response;
+    }
+    async associate() {
+        const r = await this.send({ cmd: "associate" });
+        return r.id;
     }
 }
 // ---------------------------------------------------------------------------
@@ -676,13 +389,9 @@ async function main() {
     const transport = new StdioServerTransport();
     await server.connect(transport);
     log("KeePassXC MCP server running");
-    if (TCP_HOST && TCP_PORT) {
-        log(`Target: TCP ${TCP_HOST}:${TCP_PORT}`);
-    }
-    else {
-        log(`Target: socket ${SOCKET_PATH}`);
-    }
-    log(`Identity: ${IDENTITY_FILE}`);
+    const host = process.env.KEEPASSXC_HOST || "127.0.0.1";
+    const port = process.env.KEEPASSXC_PORT || "19455";
+    log(`Target: TCP ${host}:${port}`);
 }
 main().catch((err) => {
     log(`Fatal: ${err instanceof Error ? err.message : err}`);
