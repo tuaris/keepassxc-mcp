@@ -60,6 +60,7 @@ jobs:
           doas jail -c name="$JAIL" path="$JPATH" ip4=inherit ip6=inherit \
             host.hostname="$JAIL" allow.raw_sockets=1 linux=new persist
 
+          doas jexec "$JAIL" sh -c 'echo "APT::Cache-Start \"100000000\";" > /etc/apt/apt.conf.d/99cache'
           doas jexec "$JAIL" apt-get update -qq
           doas jexec "$JAIL" apt-get install -y -qq nsis
 
