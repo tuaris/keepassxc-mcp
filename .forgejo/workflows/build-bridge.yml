@@ -52,7 +52,7 @@ jobs:
           doas cp -R bridge/ "$JPATH/tmp/build/"
 
           doas jexec "$FBSD_JAIL" sh -c \
-            'cd /tmp/build && zig cc -O2 -target x86_64-windows-gnu bridge/kpxc-bridge.c -lws2_32 -ladvapi32 -o kpxc-bridge.exe'
+            'export ZIG_LOCAL_CACHE_DIR=/tmp/zig-cache ZIG_GLOBAL_CACHE_DIR=/tmp/zig-cache-global && mkdir -p /tmp/zig-cache /tmp/zig-cache-global && cd /tmp/build && zig cc -O2 -target x86_64-windows-gnu bridge/kpxc-bridge.c -lws2_32 -ladvapi32 -o kpxc-bridge.exe'
 
           cp "$JPATH/tmp/build/kpxc-bridge.exe" .
           file kpxc-bridge.exe
