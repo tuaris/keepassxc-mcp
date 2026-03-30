@@ -37,14 +37,14 @@ jobs:
         run: |
           JAIL="$LINUX_JAIL"
           JPATH="$JAIL_ROOT/$JAIL"
-          TMPBASE="/tmp/linux-rootfs-ubuntu-24.04.tar.gz"
+          TMPBASE="/tmp/linux-rootfs-ubuntu-24.04.4.tar.gz"
 
           doas kldload linux64 2>/dev/null || true
           doas kldload linux_common 2>/dev/null || true
 
           if [ ! -f "$TMPBASE" ]; then
             echo "==> Fetching Ubuntu 24.04 rootfs..."
-            curl -fSL -o "$TMPBASE" "http://cdimage.ubuntu.com/ubuntu-base/releases/24.04/release/ubuntu-base-24.04.2-base-amd64.tar.gz"
+            curl -fSL -o "$TMPBASE" "https://cdimage.ubuntu.com/ubuntu-base/releases/noble/release/ubuntu-base-24.04.4-base-amd64.tar.gz"
           fi
 
           doas mkdir -p "$JPATH"
