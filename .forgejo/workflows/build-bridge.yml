@@ -107,7 +107,7 @@ jobs:
           AUTH="Authorization: token $FORGEJO_TOKEN"
 
           # Delete existing release for this tag if present
-          EXISTING_ID=$(curl -sf -H "$AUTH" "$BASE_URL/releases/tags/$TAG" 2>/dev/null | sed -n 's/.*"id":\([0-9]*\).*/\1/p' | head -1)
+          EXISTING_ID=$(curl -sf -H "$AUTH" "$BASE_URL/releases/tags/$TAG" 2>/dev/null | sed -n 's/.*"id" *: *\([0-9]*\).*/\1/p' | head -1)
           if [ -n "$EXISTING_ID" ]; then
             curl -sf -X DELETE -H "$AUTH" "$BASE_URL/releases/$EXISTING_ID"
             echo "Deleted existing release $EXISTING_ID"
@@ -116,7 +116,7 @@ jobs:
           # Create release
           RELEASE_ID=$(curl -sf -X POST -H "$AUTH" -H "Content-Type: application/json" \
             -d "{\"tag_name\":\"$TAG\",\"name\":\"$TAG\",\"body\":\"## KeePassXC TCP Bridge $TAG\\n\\nCommit: $GITHUB_SHA\\n\\n### Downloads\\n- **kpxc-bridge-${VERSION}-setup.exe** — Windows installer (installs service + firewall rule)\\n- **kpxc-bridge.exe** — Standalone binary\",\"draft\":false,\"prerelease\":false}" \
-            "$BASE_URL/releases" | sed -n 's/.*"id":\([0-9]*\).*/\1/p' | head -1)
+            "$BASE_URL/releases" | sed -n 's/.*"id" *: *\([0-9]*\).*/\1/p' | head -1)
           echo "Created release $RELEASE_ID"
 
           # Upload installer
