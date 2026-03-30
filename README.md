@@ -1,6 +1,6 @@
 # keepassxc-mcp
 
-MCP (Model Context Protocol) server for [KeePassXC](https://keepassxc.org/) password manager. Uses the same browser integration protocol as the KeePassXC Firefox/Chrome extension — communicating over the `keepassxc-proxy` Unix domain socket with TweetNaCl box encryption.
+MCP (Model Context Protocol) server for [KeePassXC](https://keepassxc.org/) password manager. Uses the same browser integration protocol as the KeePassXC Firefox/Chrome extension — communicating over Unix domain sockets or TCP with NaCl box encryption.
 
 ## Features
 
@@ -18,18 +18,25 @@ MCP (Model Context Protocol) server for [KeePassXC](https://keepassxc.org/) pass
 1. **KeePassXC** running with **Browser Integration** enabled:
    - Settings → Browser Integration → Enable browser integration
    - The database must be unlocked for most operations
-2. **Node.js** ≥ 18
+2. **Python** ≥ 3.10
 
 ## Setup
 
-### Local (KeePassXC on same machine)
+### Install
 
 ```bash
 cd keepassxc-mcp
-npm install && npm run build
+pip install .
 ```
 
-The server auto-detects the socket path:
+Or for development:
+```bash
+pip install -e .
+```
+
+### Local (KeePassXC on same machine)
+
+The server auto-detects the Unix socket path:
 - **Linux:** `$XDG_RUNTIME_DIR/kpxc_server` or `/run/user/<uid>/kpxc_server`
 - **macOS:** `$TMPDIR/kpxc_server` or `/tmp/kpxc_server`
 
@@ -96,8 +103,7 @@ Add to `~/.codeium/windsurf/mcp_config.json`:
 {
   "mcpServers": {
     "keepassxc": {
-      "command": "node",
-      "args": ["/path/to/keepassxc-mcp/dist/index.js"],
+      "command": "keepassxc-mcp",
       "env": {}
     }
   }
@@ -109,8 +115,7 @@ Add to `~/.codeium/windsurf/mcp_config.json`:
 {
   "mcpServers": {
     "keepassxc": {
-      "command": "node",
-      "args": ["/path/to/keepassxc-mcp/dist/index.js"],
+      "command": "keepassxc-mcp",
       "env": {
         "KEEPASSXC_HOST": "192.168.0.1",
         "KEEPASSXC_PORT": "19455"

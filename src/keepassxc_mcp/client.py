@@ -1,29 +1,22 @@
-#!/usr/bin/env python3
-"""KeePassXC protocol client — stdin/stdout JSON-line interface.
+"""KeePassXC protocol client.
 
-The Node.js MCP server delegates ALL KeePassXC communication here.
-This process handles TCP, NaCl encryption, identity persistence,
-association, and all protocol actions.
-
-Stdin commands (one JSON per line):
-  {"cmd":"get-logins","url":"...","submitUrl":"..."}
-  {"cmd":"get-totp","uuid":"..."}
-  {"cmd":"set-login","url":"...","login":"...","password":"...", ...}
-  {"cmd":"generate-password"}
-  {"cmd":"lock-database"}
-  {"cmd":"get-database-groups"}
-  {"cmd":"get-databasehash"}
-  {"cmd":"associate"}
-  {"cmd":"disconnect"}
+Handles TCP/Unix socket connection, NaCl encryption, identity persistence,
+association, and all keepassxc-browser protocol actions.
 """
-import sys, os, json, socket, base64, time, pathlib
+from __future__ import annotations
 
-try:
-    from nacl.public import PrivateKey, PublicKey, Box
-    from nacl.utils import random as nacl_random
-except ImportError:
-    sys.stderr.write("ERROR: PyNaCl not installed.  pip install pynacl\n")
-    sys.exit(1)
+import base64
+import json
+import os
+import pathlib
+import socket
+import sys
+import threading
+import time
+
+from nacl.public import PrivateKey, PublicKey, Box
+from nacl.utils import random as nacl_random
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -31,12 +24,15 @@ except ImportError:
 def b64e(data: bytes) -> str:
     return base64.b64encode(data).decode()
 
+
 def b64d(s: str) -> bytes:
     return base64.b64decode(s)
 
-def log(msg: str):
-    sys.stderr.write(f"[kpxc-client] {msg}\n")
+
+def log(msg: str) -> None:
+    sys.stderr.write(f"[keepassxc-mcp] {msg}\n")
     sys.stderr.flush()
+
 
 # ---------------------------------------------------------------------------
 # Identity persistence
@@ -45,6 +41,7 @@ IDENTITY_FILE = os.environ.get(
     "KEEPASSXC_IDENTITY",
     os.path.join(os.path.expanduser("~"), ".local", "share",
                  "keepassxc-mcp", "identity.json"))
+
 
 def load_identity() -> dict | None:
     try:
@@ -57,27 +54,64 @@ def load_identity() -> dict | None:
         log("Warning: failed to load identity")
     return None
 
-def save_identity(identity: dict):
+
+def save_identity(identity: dict) -> None:
     p = pathlib.Path(IDENTITY_FILE)
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(json.dumps(identity, indent=2))
     os.chmod(str(p), 0o600)
     log(f"Identity saved to {IDENTITY_FILE}")
 
+
+# ---------------------------------------------------------------------------
+# Auto-detect Unix socket path
+# ---------------------------------------------------------------------------
+def detect_socket_path() -> str | None:
+    """Try to find the KeePassXC browser integration socket."""
+    candidates = []
+
+    xdg = os.environ.get("XDG_RUNTIME_DIR")
+    if xdg:
+        candidates.append(os.path.join(xdg, "kpxc_server"))
+
+    tmpdir = os.environ.get("TMPDIR", "").rstrip("/")
+    if tmpdir:
+        candidates.append(os.path.join(tmpdir, "kpxc_server"))
+
+    uid = os.getuid() if hasattr(os, "getuid") else None
+    if uid is not None:
+        candidates.append(f"/run/user/{uid}/kpxc_server")
+
+    candidates.append("/tmp/kpxc_server")
+
+    for path in candidates:
+        if os.path.exists(path):
+            return path
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Client
 # ---------------------------------------------------------------------------
 class KPXCClient:
-    def __init__(self, host: str, port: int):
+    def __init__(self, host: str | None = None, port: int | None = None,
+                 socket_path: str | None = None, timeout: float = 30):
         self.host = host
         self.port = port
+        self.socket_path = socket_path
+        self.timeout = timeout
         self.sock: socket.socket | None = None
         self.session_sk_obj: PrivateKey | None = None
         self.session_pk: bytes | None = None
         self.server_pk: bytes | None = None
         self.client_id: str = ""
         self.identity: dict | None = load_identity()
+        self._lock = threading.Lock()
         self._new_session()
+
+    @property
+    def mode(self) -> str:
+        return "tcp" if self.host else "unix"
 
     def _new_session(self):
         sk = PrivateKey.generate()
@@ -92,15 +126,23 @@ class KPXCClient:
         if self.sock:
             return
         self._new_session()
-        self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.sock.settimeout(10)
-        self.sock.connect((self.host, self.port))
-        log(f"Connected to {self.host}:{self.port}")
+        if self.mode == "tcp":
+            self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.sock.settimeout(10)
+            self.sock.connect((self.host, self.port))
+            log(f"Connected to TCP {self.host}:{self.port}")
+        else:
+            self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            self.sock.settimeout(10)
+            self.sock.connect(self.socket_path)
+            log(f"Connected to socket {self.socket_path}")
 
     def disconnect(self):
         if self.sock:
-            try: self.sock.close()
-            except Exception: pass
+            try:
+                self.sock.close()
+            except Exception:
+                pass
             self.sock = None
             self.server_pk = None
             log("Disconnected")
@@ -111,7 +153,8 @@ class KPXCClient:
 
     # ---- low-level ---------------------------------------------------------
 
-    def _send_recv(self, msg: dict, timeout: float = 30) -> dict:
+    def _send_recv(self, msg: dict, timeout: float | None = None) -> dict:
+        timeout = timeout or self.timeout
         raw = json.dumps(msg) + "\n"
         self.sock.sendall(raw.encode())
         buf = b""
@@ -137,7 +180,8 @@ class KPXCClient:
     def _encrypt(self, payload: dict) -> tuple[str, str]:
         nonce = nacl_random(24)
         pt = json.dumps(payload).encode()
-        ct = Box(self.session_sk_obj, PublicKey(self.server_pk)).encrypt(pt, nonce).ciphertext
+        ct = Box(self.session_sk_obj, PublicKey(self.server_pk)).encrypt(
+            pt, nonce).ciphertext
         return b64e(ct), b64e(nonce)
 
     def _decrypt(self, msg_b64: str, nonce_b64: str) -> dict:
@@ -162,7 +206,7 @@ class KPXCClient:
         log("Key exchange complete")
 
     def send_encrypted(self, action: str, payload: dict = {},
-                       timeout: float = 30) -> dict:
+                       timeout: float | None = None) -> dict:
         if not self.server_pk:
             self.exchange_keys()
         message, nonce = self._encrypt({"action": action, **payload})
@@ -179,7 +223,7 @@ class KPXCClient:
         return resp
 
     def request(self, action: str, payload: dict = {},
-                timeout: float = 30) -> dict:
+                timeout: float | None = None) -> dict:
         """send_encrypted with one reconnect retry."""
         try:
             return self.send_encrypted(action, payload, timeout)
@@ -247,118 +291,60 @@ class KPXCClient:
     # ---- high-level API ----------------------------------------------------
 
     def get_logins(self, url: str, submit_url: str | None = None) -> dict:
-        self.ensure_ready()
-        payload: dict = {
-            "url": url,
-            "keys": [{"id": self.identity["id"],
-                       "key": self.identity["idKey"]}],
-        }
-        if submit_url:
-            payload["submitUrl"] = submit_url
-        return self.request("get-logins", payload)
+        with self._lock:
+            self.ensure_ready()
+            payload: dict = {
+                "url": url,
+                "keys": [{"id": self.identity["id"],
+                           "key": self.identity["idKey"]}],
+            }
+            if submit_url:
+                payload["submitUrl"] = submit_url
+            return self.request("get-logins", payload)
 
     def get_totp(self, uuid: str) -> dict:
-        self.ensure_ready()
-        return self.request("get-totp", {"uuid": uuid})
+        with self._lock:
+            self.ensure_ready()
+            return self.request("get-totp", {"uuid": uuid})
 
     def set_login(self, params: dict) -> dict:
-        self.ensure_ready()
-        return self.request("set-login", {
-            **params, "id": self.identity["id"]})
+        with self._lock:
+            self.ensure_ready()
+            return self.request("set-login", {
+                **params, "id": self.identity["id"]})
 
     def generate_password(self) -> dict:
-        if not self.server_pk:
-            self.exchange_keys()
-        nonce = b64e(nacl_random(24))
-        resp = self._send_recv({
-            "action": "generate-password",
-            "nonce": nonce,
-            "clientID": self.client_id,
-        }, timeout=60)
-        if resp.get("message") and resp.get("nonce"):
-            return self._decrypt(resp["message"], resp["nonce"])
-        if resp.get("error"):
-            raise RuntimeError(f"KeePassXC error: {resp['error']}")
-        return resp
+        with self._lock:
+            if not self.server_pk:
+                self.exchange_keys()
+            nonce = b64e(nacl_random(24))
+            resp = self._send_recv({
+                "action": "generate-password",
+                "nonce": nonce,
+                "clientID": self.client_id,
+            }, timeout=60)
+            if resp.get("message") and resp.get("nonce"):
+                return self._decrypt(resp["message"], resp["nonce"])
+            if resp.get("error"):
+                raise RuntimeError(f"KeePassXC error: {resp['error']}")
+            return resp
 
     def lock_database(self) -> dict:
-        self.ensure_ready()
-        try:
-            return self.request("lock-database")
-        except RuntimeError as e:
-            if "Database not opened" in str(e):
-                return {"success": "true", "locked": True}
-            raise
+        with self._lock:
+            self.ensure_ready()
+            try:
+                return self.request("lock-database")
+            except RuntimeError as e:
+                if "Database not opened" in str(e):
+                    return {"success": "true", "locked": True}
+                raise
 
     def get_database_groups(self) -> dict:
-        self.ensure_ready()
-        return self.request("get-database-groups")
+        with self._lock:
+            self.ensure_ready()
+            return self.request("get-database-groups")
 
     def get_databasehash(self) -> dict:
-        self.ensure_ready()
-        return self.request("get-databasehash")
-
-
-# ---------------------------------------------------------------------------
-# Main loop — read JSON commands from stdin, write JSON responses to stdout
-# ---------------------------------------------------------------------------
-def main():
-    host = os.environ.get("KEEPASSXC_HOST", "127.0.0.1")
-    port = int(os.environ.get("KEEPASSXC_PORT", "19455"))
-    client = KPXCClient(host, port)
-
-    def reply(obj):
-        sys.stdout.write(json.dumps(obj) + "\n")
-        sys.stdout.flush()
-
-    for line in sys.stdin:
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            req = json.loads(line)
-        except json.JSONDecodeError:
-            reply({"ok": False, "error": "Invalid JSON"})
-            continue
-
-        cmd = req.get("cmd", "")
-        try:
-            if cmd == "get-logins":
-                r = client.get_logins(req["url"], req.get("submitUrl"))
-                reply({"ok": True, "response": r})
-            elif cmd == "get-totp":
-                r = client.get_totp(req["uuid"])
-                reply({"ok": True, "response": r})
-            elif cmd == "set-login":
-                r = client.set_login(req.get("params", {}))
-                reply({"ok": True, "response": r})
-            elif cmd == "generate-password":
-                r = client.generate_password()
-                reply({"ok": True, "response": r})
-            elif cmd == "lock-database":
-                r = client.lock_database()
-                reply({"ok": True, "response": r})
-            elif cmd == "get-database-groups":
-                r = client.get_database_groups()
-                reply({"ok": True, "response": r})
-            elif cmd == "get-databasehash":
-                r = client.get_databasehash()
-                reply({"ok": True, "response": r})
-            elif cmd == "associate":
-                assoc_id = client.associate()
-                reply({"ok": True, "id": assoc_id})
-            elif cmd == "disconnect":
-                client.disconnect()
-                reply({"ok": True})
-            else:
-                reply({"ok": False, "error": f"Unknown command: {cmd}"})
-        except Exception as e:
-            log(f"Error handling {cmd}: {e}")
-            reply({"ok": False, "error": str(e)})
-            if isinstance(e, (ConnectionError, BrokenPipeError,
-                              ConnectionResetError)):
-                client.disconnect()
-
-
-if __name__ == "__main__":
-    main()
+        with self._lock:
+            self.ensure_ready()
+            return self.request("get-databasehash")

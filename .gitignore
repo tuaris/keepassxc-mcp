@@ -3,3 +3,7 @@ dist/
 *.js.map
 *.exe
 *.pdb
+__pycache__/
+*.pyc
+*.egg-info/
+.venv/
