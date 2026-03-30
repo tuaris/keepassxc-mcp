@@ -74,6 +74,9 @@ jobs:
           doas cp kpxc-bridge.exe "$JPATH/tmp/build/"
           doas cp installer/kpxc-bridge.nsi "$JPATH/tmp/build/installer/"
 
+          echo "==> Files in jail /tmp/build:"
+          doas jexec "$LINUX_JAIL" ls -la /tmp/build/
+
           doas jexec "$LINUX_JAIL" sh -c \
             "cd /tmp/build && makensis -DVERSION=${VERSION} -DOUTFILE=kpxc-bridge-${VERSION}-setup.exe installer/kpxc-bridge.nsi"
 
