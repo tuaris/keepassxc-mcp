@@ -100,6 +100,7 @@ jobs:
         env:
           FORGEJO_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          set +e
           REPO="$GITHUB_REPOSITORY"
           BASE_URL="$GITHUB_SERVER_URL/api/v1/repos/$REPO"
           TAG="$GITHUB_REF_NAME"
@@ -107,30 +108,34 @@ jobs:
           AUTH="Authorization: token $FORGEJO_TOKEN"
 
           # Delete existing release for this tag if present
-          RESP=$(curl -sf -H "$AUTH" "$BASE_URL/releases/tags/$TAG" 2>/dev/null || true)
+          RESP=$(curl -s -H "$AUTH" "$BASE_URL/releases/tags/$TAG")
           EXISTING_ID=$(echo "$RESP" | grep -o '"id":[0-9]*' | head -1 | grep -o '[0-9]*')
           if [ -n "$EXISTING_ID" ]; then
-            curl -sf -X DELETE -H "$AUTH" "$BASE_URL/releases/$EXISTING_ID"
+            curl -s -X DELETE -H "$AUTH" "$BASE_URL/releases/$EXISTING_ID"
             echo "Deleted existing release $EXISTING_ID"
           fi
 
           # Create release
-          RESP=$(curl -sf -X POST -H "$AUTH" -H "Content-Type: application/json" \
-            -d "{\"tag_name\":\"$TAG\",\"name\":\"$TAG\",\"body\":\"## KeePassXC TCP Bridge $TAG\\n\\nCommit: $GITHUB_SHA\\n\\n### Downloads\\n- **kpxc-bridge-${VERSION}-setup.exe** — Windows installer (installs service + firewall rule)\\n- **kpxc-bridge.exe** — Standalone binary\",\"draft\":false,\"prerelease\":false}" \
+          RESP=$(curl -s -X POST -H "$AUTH" -H "Content-Type: application/json" \
+            -d "{\"tag_name\":\"$TAG\",\"name\":\"$TAG\",\"body\":\"## KeePassXC TCP Bridge $TAG\\n\\nCommit: $GITHUB_SHA\\n\\n### Downloads\\n- **kpxc-bridge-${VERSION}-setup.exe** - Windows installer (installs service + firewall rule)\\n- **kpxc-bridge.exe** - Standalone binary\",\"draft\":false,\"prerelease\":false}" \
             "$BASE_URL/releases")
-          echo "API response: $RESP"
+          echo "Create release response: $RESP"
           RELEASE_ID=$(echo "$RESP" | grep -o '"id":[0-9]*' | head -1 | grep -o '[0-9]*')
+          if [ -z "$RELEASE_ID" ]; then
+            echo "ERROR: Failed to create release"
+            exit 1
+          fi
           echo "Created release $RELEASE_ID"
 
           # Upload installer
-          curl -sf -X POST -H "Authorization: token $FORGEJO_TOKEN" \
+          curl -s -X POST -H "Authorization: token $FORGEJO_TOKEN" \
             -H "Content-Type: application/octet-stream" \
             --data-binary "@kpxc-bridge-${VERSION}-setup.exe" \
             "$BASE_URL/releases/$RELEASE_ID/assets?name=kpxc-bridge-${VERSION}-setup.exe"
           echo "Uploaded installer"
 
           # Upload standalone binary
-          curl -sf -X POST -H "Authorization: token $FORGEJO_TOKEN" \
+          curl -s -X POST -H "Authorization: token $FORGEJO_TOKEN" \
             -H "Content-Type: application/octet-stream" \
             --data-binary @kpxc-bridge.exe \
             "$BASE_URL/releases/$RELEASE_ID/assets?name=kpxc-bridge.exe"
