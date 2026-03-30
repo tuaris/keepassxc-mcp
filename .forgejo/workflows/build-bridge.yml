@@ -6,7 +6,6 @@ on:
   workflow_dispatch:
 
 env:
-  FBSD_JAIL: freebsd-build-${{ github.run_id }}
   LINUX_JAIL: linux-build-${{ github.run_id }}
   JAIL_ROOT: /usr/local/jails
 
@@ -22,52 +21,16 @@ jobs:
           tar xf repo.tar.gz --strip-components=1
           rm repo.tar.gz
 
-      # --- FreeBSD jail: cross-compile with zig ---
-      - name: Provision FreeBSD jail
+      # --- Cross-compile with zig (directly on host) ---
+      - name: Install zig
         run: |
-          JAIL="$FBSD_JAIL"
-          JPATH="$JAIL_ROOT/$JAIL"
-          TMPBASE="/tmp/freebsd-base-15.0-amd64.txz"
-
-          if [ ! -f "$TMPBASE" ]; then
-            echo "==> Fetching FreeBSD 15.0 base..."
-            curl -fSL -o "$TMPBASE" "https://download.freebsd.org/releases/amd64/15.0-RELEASE/base.txz"
-          fi
-
-          doas mkdir -p "$JPATH"
-          doas tar -xf "$TMPBASE" -C "$JPATH"
-          doas cp /etc/resolv.conf "$JPATH/etc/resolv.conf"
-
-          doas jail -c name="$JAIL" path="$JPATH" ip4=inherit ip6=inherit \
-            host.hostname="$JAIL" allow.raw_sockets=1 mount.devfs persist
-
-          doas jexec "$JAIL" env ASSUME_ALWAYS_YES=yes pkg bootstrap -f
-          doas jexec "$JAIL" pkg install -y zig
+          which zig && zig version || doas pkg install -y zig
 
       - name: Build kpxc-bridge.exe
         run: |
-          JPATH="$JAIL_ROOT/$FBSD_JAIL"
-
-          doas mkdir -p "$JPATH/tmp/build"
-          doas cp -R bridge/ "$JPATH/tmp/build/"
-
-          doas jexec "$FBSD_JAIL" sh -c \
-            'export ZIG_LOCAL_CACHE_DIR=/tmp/zig-cache ZIG_GLOBAL_CACHE_DIR=/tmp/zig-cache-global && mkdir -p /tmp/zig-cache /tmp/zig-cache-global && cd /tmp/build && zig cc -O2 -target x86_64-windows-gnu bridge/kpxc-bridge.c -lws2_32 -ladvapi32 -o kpxc-bridge.exe'
-
-          cp "$JPATH/tmp/build/kpxc-bridge.exe" .
+          zig cc -O2 -target x86_64-windows-gnu bridge/kpxc-bridge.c -lws2_32 -ladvapi32 -o kpxc-bridge.exe
           file kpxc-bridge.exe
           ls -l kpxc-bridge.exe
-
-      - name: Tear down FreeBSD jail
-        if: always()
-        run: |
-          doas jail -r "$FBSD_JAIL" 2>/dev/null || true
-          JPATH="$JAIL_ROOT/$FBSD_JAIL"
-          doas umount "$JPATH/dev" 2>/dev/null || true
-          if [ -d "$JPATH" ]; then
-            doas chflags -R noschg "$JPATH" 2>/dev/null || true
-            doas rm -rf "$JPATH"
-          fi
 
       # --- Linux jail: build NSIS installer ---
       - name: Provision Linux jail
