@@ -7,7 +7,7 @@ on:
 
 jobs:
   build-and-release:
-    runs-on: FreeBSD-15.0
+    runs-on: FreeBSD
     steps:
       - name: Checkout
         run: |
@@ -17,12 +17,69 @@ jobs:
           tar xf repo.tar.gz --strip-components=1
           rm repo.tar.gz
 
-      - name: Build kpxc-bridge.exe
+      # --- FreeBSD jail: cross-compile with zig ---
+      - name: Provision FreeBSD build jail
+        id: fbsd
+        uses: https://pacyworld.dev/pacyworld/freebsd-build-action@master
+        with:
+          version: '15.0'
+          packages: 'zig'
+
+      - name: Build kpxc-bridge.exe (zig cross-compile)
         run: |
-          zig cc -O2 -target x86_64-windows-gnu bridge/kpxc-bridge.c -lws2_32 -ladvapi32 -o kpxc-bridge.exe
+          JAIL="${{ steps.fbsd.outputs.jail_name }}"
+          JPATH="${{ steps.fbsd.outputs.jail_path }}"
+
+          doas mkdir -p "$JPATH/tmp/build"
+          doas cp -R bridge/ "$JPATH/tmp/build/"
+
+          doas jexec "$JAIL" sh -c \
+            'cd /tmp/build && zig cc -O2 -target x86_64-windows-gnu bridge/kpxc-bridge.c -lws2_32 -ladvapi32 -o kpxc-bridge.exe'
+
+          cp "$JPATH/tmp/build/kpxc-bridge.exe" .
           file kpxc-bridge.exe
           ls -l kpxc-bridge.exe
 
+      - name: Tear down FreeBSD jail
+        if: always()
+        uses: https://pacyworld.dev/pacyworld/freebsd-build-action/teardown@master
+        with:
+          jail_name: ${{ steps.fbsd.outputs.jail_name }}
+
+      # --- Linux jail: build NSIS installer ---
+      - name: Provision Linux build jail
+        id: linux
+        uses: https://pacyworld.dev/pacyworld/linux-build-action@master
+        with:
+          distro: 'ubuntu'
+          version: '24.04'
+          packages: 'nsis'
+
+      - name: Build NSIS installer
+        run: |
+          JAIL="${{ steps.linux.outputs.jail_name }}"
+          JPATH="${{ steps.linux.outputs.jail_path }}"
+          TAG="${GITHUB_REF_NAME:-dev}"
+          VERSION="${TAG#v}"
+
+          doas mkdir -p "$JPATH/tmp/build/installer"
+          doas cp kpxc-bridge.exe "$JPATH/tmp/build/"
+          doas cp installer/kpxc-bridge.nsi "$JPATH/tmp/build/installer/"
+
+          doas jexec "$JAIL" sh -c \
+            "cd /tmp/build && makensis -DVERSION=${VERSION} -DOUTFILE=kpxc-bridge-${VERSION}-setup.exe installer/kpxc-bridge.nsi"
+
+          cp "$JPATH/tmp/build/kpxc-bridge-${VERSION}-setup.exe" .
+          file "kpxc-bridge-${VERSION}-setup.exe"
+          ls -l "kpxc-bridge-${VERSION}-setup.exe"
+
+      - name: Tear down Linux jail
+        if: always()
+        uses: https://pacyworld.dev/pacyworld/linux-build-action/teardown@master
+        with:
+          jail_name: ${{ steps.linux.outputs.jail_name }}
+
+      # --- Publish release ---
       - name: Publish release
         env:
           FORGEJO_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -30,6 +87,7 @@ jobs:
           REPO="$GITHUB_REPOSITORY"
           BASE_URL="$GITHUB_SERVER_URL/api/v1/repos/$REPO"
           TAG="$GITHUB_REF_NAME"
+          VERSION="${TAG#v}"
           AUTH="Authorization: token $FORGEJO_TOKEN"
 
           # Delete existing release for this tag if present
@@ -41,13 +99,20 @@ jobs:
 
           # Create release
           RELEASE_ID=$(curl -sf -X POST -H "$AUTH" -H "Content-Type: application/json" \
-            -d "{\"tag_name\":\"$TAG\",\"name\":\"$TAG\",\"body\":\"kpxc-bridge.exe for Windows x86_64.\\n\\nCommit: $GITHUB_SHA\",\"draft\":false,\"prerelease\":false}" \
+            -d "{\"tag_name\":\"$TAG\",\"name\":\"$TAG\",\"body\":\"## KeePassXC TCP Bridge $TAG\\n\\nCommit: $GITHUB_SHA\\n\\n### Downloads\\n- **kpxc-bridge-${VERSION}-setup.exe** — Windows installer (installs service + firewall rule)\\n- **kpxc-bridge.exe** — Standalone binary\",\"draft\":false,\"prerelease\":false}" \
             "$BASE_URL/releases" | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
           echo "Created release $RELEASE_ID"
 
-          # Upload binary
+          # Upload installer
+          curl -sf -X POST -H "Authorization: token $FORGEJO_TOKEN" \
+            -H "Content-Type: application/octet-stream" \
+            --data-binary "@kpxc-bridge-${VERSION}-setup.exe" \
+            "$BASE_URL/releases/$RELEASE_ID/assets?name=kpxc-bridge-${VERSION}-setup.exe"
+          echo "Uploaded installer"
+
+          # Upload standalone binary
           curl -sf -X POST -H "Authorization: token $FORGEJO_TOKEN" \
             -H "Content-Type: application/octet-stream" \
             --data-binary @kpxc-bridge.exe \
             "$BASE_URL/releases/$RELEASE_ID/assets?name=kpxc-bridge.exe"
-          echo "Uploaded kpxc-bridge.exe to release $TAG"
+          echo "Uploaded standalone binary"
