@@ -5,6 +5,11 @@ on:
     tags: ['v*']
   workflow_dispatch:
 
+env:
+  FBSD_JAIL: freebsd-build-${{ github.run_id }}
+  LINUX_JAIL: linux-build-${{ github.run_id }}
+  JAIL_ROOT: /usr/local/jails
+
 jobs:
   build-and-release:
     runs-on: FreeBSD
@@ -18,22 +23,35 @@ jobs:
           rm repo.tar.gz
 
       # --- FreeBSD jail: cross-compile with zig ---
-      - name: Provision FreeBSD build jail
-        id: fbsd
-        uses: https://pacyworld.dev/pacyworld/freebsd-build-action@master
-        with:
-          version: '15.0'
-          packages: 'zig'
-
-      - name: Build kpxc-bridge.exe (zig cross-compile)
+      - name: Provision FreeBSD jail
         run: |
-          JAIL="${{ steps.fbsd.outputs.jail_name }}"
-          JPATH="${{ steps.fbsd.outputs.jail_path }}"
+          JAIL="$FBSD_JAIL"
+          JPATH="$JAIL_ROOT/$JAIL"
+          TMPBASE="/tmp/freebsd-base-15.0-amd64.txz"
+
+          if [ ! -f "$TMPBASE" ]; then
+            echo "==> Fetching FreeBSD 15.0 base..."
+            curl -fSL -o "$TMPBASE" "https://download.freebsd.org/releases/amd64/15.0-RELEASE/base.txz"
+          fi
+
+          doas mkdir -p "$JPATH"
+          doas tar -xf "$TMPBASE" -C "$JPATH"
+          doas cp /etc/resolv.conf "$JPATH/etc/resolv.conf"
+
+          doas jail -c name="$JAIL" path="$JPATH" ip4=inherit ip6=inherit \
+            host.hostname="$JAIL" allow.raw_sockets=1 mount.devfs persist
+
+          doas jexec "$JAIL" env ASSUME_ALWAYS_YES=yes pkg bootstrap -f
+          doas jexec "$JAIL" pkg install -y zig
+
+      - name: Build kpxc-bridge.exe
+        run: |
+          JPATH="$JAIL_ROOT/$FBSD_JAIL"
 
           doas mkdir -p "$JPATH/tmp/build"
           doas cp -R bridge/ "$JPATH/tmp/build/"
 
-          doas jexec "$JAIL" sh -c \
+          doas jexec "$FBSD_JAIL" sh -c \
             'cd /tmp/build && zig cc -O2 -target x86_64-windows-gnu bridge/kpxc-bridge.c -lws2_32 -ladvapi32 -o kpxc-bridge.exe'
 
           cp "$JPATH/tmp/build/kpxc-bridge.exe" .
@@ -42,23 +60,49 @@ jobs:
 
       - name: Tear down FreeBSD jail
         if: always()
-        uses: https://pacyworld.dev/pacyworld/freebsd-build-action/teardown@master
-        with:
-          jail_name: ${{ steps.fbsd.outputs.jail_name }}
+        run: |
+          doas jail -r "$FBSD_JAIL" 2>/dev/null || true
+          JPATH="$JAIL_ROOT/$FBSD_JAIL"
+          doas umount "$JPATH/dev" 2>/dev/null || true
+          if [ -d "$JPATH" ]; then
+            doas chflags -R noschg "$JPATH" 2>/dev/null || true
+            doas rm -rf "$JPATH"
+          fi
 
       # --- Linux jail: build NSIS installer ---
-      - name: Provision Linux build jail
-        id: linux
-        uses: https://pacyworld.dev/pacyworld/linux-build-action@master
-        with:
-          distro: 'ubuntu'
-          version: '24.04'
-          packages: 'nsis'
+      - name: Provision Linux jail
+        run: |
+          JAIL="$LINUX_JAIL"
+          JPATH="$JAIL_ROOT/$JAIL"
+          TMPBASE="/tmp/linux-rootfs-ubuntu-24.04.tar.gz"
+
+          doas kldload linux64 2>/dev/null || true
+          doas kldload linux_common 2>/dev/null || true
+
+          if [ ! -f "$TMPBASE" ]; then
+            echo "==> Fetching Ubuntu 24.04 rootfs..."
+            curl -fSL -o "$TMPBASE" "http://cdimage.ubuntu.com/ubuntu-base/releases/24.04/release/ubuntu-base-24.04.2-base-amd64.tar.gz"
+          fi
+
+          doas mkdir -p "$JPATH"
+          doas tar -xf "$TMPBASE" -C "$JPATH"
+          doas cp /etc/resolv.conf "$JPATH/etc/resolv.conf"
+
+          doas mkdir -p "$JPATH/proc" "$JPATH/sys" "$JPATH/dev/shm"
+          doas mount -t linprocfs linprocfs "$JPATH/proc"
+          doas mount -t linsysfs linsysfs "$JPATH/sys"
+          doas mount -t devfs devfs "$JPATH/dev"
+          doas mount -t tmpfs tmpfs "$JPATH/dev/shm"
+
+          doas jail -c name="$JAIL" path="$JPATH" ip4=inherit ip6=inherit \
+            host.hostname="$JAIL" allow.raw_sockets=1 linux=new persist
+
+          doas jexec "$JAIL" apt-get update -qq
+          doas jexec "$JAIL" apt-get install -y -qq nsis
 
       - name: Build NSIS installer
         run: |
-          JAIL="${{ steps.linux.outputs.jail_name }}"
-          JPATH="${{ steps.linux.outputs.jail_path }}"
+          JPATH="$JAIL_ROOT/$LINUX_JAIL"
           TAG="${GITHUB_REF_NAME:-dev}"
           VERSION="${TAG#v}"
 
@@ -66,7 +110,7 @@ jobs:
           doas cp kpxc-bridge.exe "$JPATH/tmp/build/"
           doas cp installer/kpxc-bridge.nsi "$JPATH/tmp/build/installer/"
 
-          doas jexec "$JAIL" sh -c \
+          doas jexec "$LINUX_JAIL" sh -c \
             "cd /tmp/build && makensis -DVERSION=${VERSION} -DOUTFILE=kpxc-bridge-${VERSION}-setup.exe installer/kpxc-bridge.nsi"
 
           cp "$JPATH/tmp/build/kpxc-bridge-${VERSION}-setup.exe" .
@@ -75,9 +119,17 @@ jobs:
 
       - name: Tear down Linux jail
         if: always()
-        uses: https://pacyworld.dev/pacyworld/linux-build-action/teardown@master
-        with:
-          jail_name: ${{ steps.linux.outputs.jail_name }}
+        run: |
+          JPATH="$JAIL_ROOT/$LINUX_JAIL"
+          doas jail -r "$LINUX_JAIL" 2>/dev/null || true
+          doas umount "$JPATH/dev/shm" 2>/dev/null || true
+          doas umount "$JPATH/dev" 2>/dev/null || true
+          doas umount "$JPATH/sys" 2>/dev/null || true
+          doas umount "$JPATH/proc" 2>/dev/null || true
+          if [ -d "$JPATH" ]; then
+            doas chflags -R noschg "$JPATH" 2>/dev/null || true
+            doas rm -rf "$JPATH"
+          fi
 
       # --- Publish release ---
       - name: Publish release
