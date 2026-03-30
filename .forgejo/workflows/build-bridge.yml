@@ -70,15 +70,12 @@ jobs:
           TAG="${GITHUB_REF_NAME:-dev}"
           VERSION="${TAG#v}"
 
-          doas mkdir -p "$JPATH/tmp/build/installer"
+          doas mkdir -p "$JPATH/tmp/build"
           doas cp kpxc-bridge.exe "$JPATH/tmp/build/"
-          doas cp installer/kpxc-bridge.nsi "$JPATH/tmp/build/installer/"
-
-          echo "==> Files in jail /tmp/build:"
-          doas jexec "$LINUX_JAIL" ls -la /tmp/build/
+          doas cp installer/kpxc-bridge.nsi "$JPATH/tmp/build/"
 
           doas jexec "$LINUX_JAIL" sh -c \
-            "cd /tmp/build && makensis -DVERSION=${VERSION} -DOUTFILE=kpxc-bridge-${VERSION}-setup.exe installer/kpxc-bridge.nsi"
+            "cd /tmp/build && makensis -DVERSION=${VERSION} -DOUTFILE=kpxc-bridge-${VERSION}-setup.exe kpxc-bridge.nsi"
 
           cp "$JPATH/tmp/build/kpxc-bridge-${VERSION}-setup.exe" .
           file "kpxc-bridge-${VERSION}-setup.exe"
