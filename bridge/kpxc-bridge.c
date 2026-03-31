@@ -1,4 +1,7 @@
 /*
+ * Copyright (c) 2026, Daniel Morante. All rights reserved.
+ * SPDX-License-Identifier: BSD-2-Clause
+ *
  * kpxc-bridge.c — TCP-to-named-pipe bridge for KeePassXC
  *
  * Forwards TCP connections to the KeePassXC browser integration named pipe,

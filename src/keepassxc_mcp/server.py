@@ -1,3 +1,5 @@
+# Copyright (c) 2026, Daniel Morante. All rights reserved.
+# SPDX-License-Identifier: BSD-2-Clause
 """KeePassXC MCP server — pure Python implementation.
 
 Exposes KeePassXC browser protocol operations as MCP tools via the

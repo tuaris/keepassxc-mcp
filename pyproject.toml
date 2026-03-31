@@ -4,8 +4,10 @@ build-backend = "hatchling.build"
 
 [project]
 name = "keepassxc-mcp"
-version = "1.0.0"
+version = "0.2.3"
 description = "MCP server for KeePassXC password manager using the browser integration protocol"
+license = {text = "BSD-2-Clause"}
+authors = [{name = "Daniel Morante"}]
 requires-python = ">=3.10"
 dependencies = [
     "pynacl>=1.5.0",

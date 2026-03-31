@@ -1,4 +1,4 @@
-# keepassxc-mcp
+# KeePassXC MCP Server
 
 MCP (Model Context Protocol) server for [KeePassXC](https://keepassxc.org/) password manager. Uses the same browser integration protocol as the KeePassXC Firefox/Chrome extension — communicating over Unix domain sockets or TCP with NaCl box encryption.
 
@@ -155,6 +155,21 @@ Subsequent connections reuse the stored identity (validated via `test-associate`
 - The identity key is equivalent to what the browser extension stores; protect it accordingly
 - If using TCP forwarding, the NaCl encryption protects the payload, but consider using SSH tunneling for defense in depth
 
+## Donations
+
+If you find this project useful, consider a small donation:
+
+| Currency | Address |
+|---|---|
+| **BTC** | `1B6eyXVRPxdEitW5vWrUnzzXUy6o38P9wN` |
+| **LTC** | `MCrnhTAHA3n6X8jUJQj9hed5CT585sJExQ` |
+| **PEPE (Ᵽ)** | `Pk3WZshXxi656RNNoVuZTCERVhhv4pyPJS` |
+| **DOGE** | `DQgDGexy5tJ4StbMdyGwgfyxhcAGTRrPVB` |
+
 ## Protocol Reference
 
 This server implements the [keepassxc-browser protocol](https://github.com/keepassxreboot/keepassxc-browser/blob/develop/keepassxc-protocol.md).
+
+## License
+
+BSD 2-Clause. See [LICENSE](LICENSE).
