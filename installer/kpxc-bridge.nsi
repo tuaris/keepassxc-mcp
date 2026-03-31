@@ -78,9 +78,9 @@ FunctionEnd
 Section "Install"
   SetOutPath "$INSTDIR"
 
-  ; Remove old service if upgrading from service-based version
-  nsExec::ExecToLog 'sc stop KeePassXCBridge'
-  nsExec::ExecToLog 'sc delete KeePassXCBridge'
+  ; Remove old service if upgrading from service-based version (silent)
+  nsExec::Exec 'sc stop KeePassXCBridge'
+  nsExec::Exec 'sc delete KeePassXCBridge'
   Sleep 1000
 
   ; Kill any running tray instance
@@ -139,9 +139,9 @@ Section "Uninstall"
   ; Remove from startup registry
   nsExec::ExecToLog '"$INSTDIR\kpxc-bridge.exe" uninstall'
 
-  ; Remove old service if present (upgrade path)
-  nsExec::ExecToLog 'sc stop KeePassXCBridge'
-  nsExec::ExecToLog 'sc delete KeePassXCBridge'
+  ; Remove old service if present (silent — only matters for upgrades from v0.1.x)
+  nsExec::Exec 'sc stop KeePassXCBridge'
+  nsExec::Exec 'sc delete KeePassXCBridge'
 
   ; Remove firewall rule
   nsExec::ExecToLog 'netsh advfirewall firewall delete rule name="KeePassXC TCP Bridge"'
