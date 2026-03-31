@@ -58,39 +58,41 @@ socat TCP-LISTEN:19455,reuseaddr,fork UNIX-CONNECT:${XDG_RUNTIME_DIR}/kpxc_serve
 
 Windows (native bridge — no dependencies):
 
-A native C bridge is included in `bridge/kpxc-bridge.c`. It forwards TCP connections
-to the KeePassXC named pipe (`\\.\pipe\org.keepassxc.KeePassXC.BrowserServer`).
+A native C bridge is included in `bridge/kpxc-bridge.c`. It runs as a **system tray application**,
+forwarding TCP connections to the KeePassXC named pipe
+(`\\.\pipe\org.keepassxc.KeePassXC.BrowserServer`).
 
-Pre-built binaries are available from
-[Releases](https://pacyworld.dev/daniel/keepassxc-mcp/releases).
+**Install via the Windows installer** (recommended):
 
-Build from source (cross-compile from any OS with [Zig](https://ziglang.org/)):
+Download `kpxc-bridge-VERSION-setup.exe` from
+[Releases](https://pacyworld.dev/daniel/keepassxc-mcp/releases). The installer:
+- Installs the bridge to `Program Files\KeePassXC Bridge`
+- Adds a Start Menu shortcut
+- Registers the bridge to start on login (HKCU Run key)
+- Creates a Windows Firewall rule for the configured TCP port
+- Starts the tray app immediately
+
+**Or run the standalone binary:**
+
+Download `kpxc-bridge.exe` from [Releases](https://pacyworld.dev/daniel/keepassxc-mcp/releases).
+
+```cmd
+kpxc-bridge.exe                     Run as tray app (default)
+kpxc-bridge.exe -console            Run in console mode (Ctrl+C to stop)
+kpxc-bridge.exe -port 19455         Set TCP listen port (default: 19455)
+kpxc-bridge.exe -bind 192.168.0.1   Bind to specific interface
+kpxc-bridge.exe install             Add to user startup (login)
+kpxc-bridge.exe uninstall           Remove from user startup
+```
+
+The tray icon indicates connection status (idle vs active) and logs to
+`kpxc-bridge.log` next to the executable.
+
+**Build from source** (cross-compile from any OS with [Zig](https://ziglang.org/)):
 ```bash
-zig cc -O2 -target x86_64-windows-gnu bridge/kpxc-bridge.c -lws2_32 -ladvapi32 -o kpxc-bridge.exe
+zig cc -O2 -target x86_64-windows-gnu bridge/kpxc-bridge.c bridge/resources/kpxc-bridge.rc \
+  -lws2_32 -ladvapi32 -lshell32 -luser32 -Wl,--subsystem,windows -o kpxc-bridge.exe
 ```
-
-Or with MSVC (`cl`) / MinGW (`gcc`) on Windows:
-```cmd
-cl /O2 /W4 bridge\kpxc-bridge.c /Fe:kpxc-bridge.exe ws2_32.lib advapi32.lib
-gcc -O2 -Wall -o kpxc-bridge.exe bridge/kpxc-bridge.c -lws2_32 -ladvapi32
-```
-
-Run in console mode (for testing):
-```cmd
-kpxc-bridge.exe -port 19455
-```
-
-Install as a Windows service (run as Administrator):
-```cmd
-kpxc-bridge.exe -port 19455 install
-sc start KeePassXCBridge
-```
-
-The service reads its configuration from the registry at
-`HKLM\SYSTEM\CurrentControlSet\Services\KeePassXCBridge\Parameters`
-and logs to `kpxc-bridge.log` next to the executable.
-
-Ensure **Windows Firewall** allows inbound TCP on the configured port.
 
 Then configure the MCP server to connect via TCP (see environment variables below).
 
