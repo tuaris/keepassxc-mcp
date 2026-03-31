@@ -266,7 +266,11 @@ def _dispatch_tool(name: str, args: dict) -> dict:
                     s += "\n" + fmt(child, depth + 1)
                 return s
 
-            groups = result.get("groups", [])
+            groups_obj = result.get("groups", {})
+            if isinstance(groups_obj, dict):
+                groups = groups_obj.get("groups", [])
+            else:
+                groups = groups_obj if isinstance(groups_obj, list) else []
             tree = ("\n".join(fmt(g) for g in groups)
                     if groups else "No groups")
             default = result.get("defaultGroup", "N/A")
