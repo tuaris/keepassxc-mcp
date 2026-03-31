@@ -1,0 +1,5 @@
+#include "resource.h"
+
+IDI_APPICON           ICON "keepassbridge.ico"
+IDI_TRAY_DISCONNECTED ICON "tray-disconnected.ico"
+IDI_TRAY_CONNECTED    ICON "tray-connected.ico"

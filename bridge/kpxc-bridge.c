@@ -9,13 +9,14 @@
  * account needed, automatic access to KeePassXC's per-user named pipe.
  *
  * Build (Visual Studio Developer Command Prompt):
- *   cl /O2 /W4 kpxc-bridge.c /Fe:kpxc-bridge.exe ws2_32.lib advapi32.lib shell32.lib user32.lib
+ *   rc resources/kpxc-bridge.rc
+ *   cl /O2 /W4 kpxc-bridge.c resources/kpxc-bridge.res /Fe:kpxc-bridge.exe /link /SUBSYSTEM:WINDOWS ws2_32.lib advapi32.lib shell32.lib user32.lib
  *
  * Build (MinGW / MSYS2):
- *   gcc -O2 -Wall -o kpxc-bridge.exe kpxc-bridge.c -lws2_32 -ladvapi32 -lshell32 -luser32
+ *   gcc -O2 -Wall -mwindows -o kpxc-bridge.exe kpxc-bridge.c resources/kpxc-bridge.rc -lws2_32 -ladvapi32 -lshell32 -luser32
  *
  * Build (Zig CC, cross-compile from any OS):
- *   zig cc -O2 -target x86_64-windows-gnu kpxc-bridge.c -lws2_32 -ladvapi32 -lshell32 -luser32 -o kpxc-bridge.exe
+ *   zig cc -O2 -target x86_64-windows-gnu kpxc-bridge.c resources/kpxc-bridge.rc -lws2_32 -ladvapi32 -lshell32 -luser32 -Wl,--subsystem,windows -o kpxc-bridge.exe
  *
  * Usage:
  *   kpxc-bridge.exe                         Run as tray app (default)
@@ -37,6 +38,7 @@
 #include <ws2tcpip.h>
 #include <shellapi.h>
 #include <stdio.h>
+#include "resources/resource.h"
 #include <stdlib.h>
 #include <string.h>
 
@@ -73,6 +75,8 @@ static volatile LONG g_connections = 0;
 /* Tray globals */
 static HWND            g_hwnd = NULL;
 static NOTIFYICONDATAA g_nid = {0};
+static HICON           g_icon_idle = NULL;
+static HICON           g_icon_active = NULL;
 
 /* ---------- Logging ---------- */
 static void logmsg(const char *fmt, ...)
@@ -410,8 +414,14 @@ static BOOL WINAPI console_ctrl_handler(DWORD ctrl)
 
 static int run_console(void)
 {
+    /* GUI subsystem: allocate a console for -console mode */
+    if (!AttachConsole(ATTACH_PARENT_PROCESS))
+        AllocConsole();
+    freopen("CONOUT$", "w", stdout);
+    freopen("CONOUT$", "w", stderr);
+    freopen("CONIN$", "r", stdin);
     SetConsoleCtrlHandler(console_ctrl_handler, TRUE);
-    logmsg("%s — console mode", APP_NAME);
+    logmsg("%s - console mode", APP_NAME);
     return run_bridge();
 }
 
@@ -420,12 +430,16 @@ static int run_console(void)
 static void tray_update_tooltip(void)
 {
     LONG n = InterlockedCompareExchange(&g_connections, 0, 0);
+    HICON want = (n > 0) ? g_icon_active : g_icon_idle;
+    if (g_nid.hIcon != want) {
+        g_nid.hIcon = want;
+    }
     if (n > 0)
         _snprintf(g_nid.szTip, sizeof(g_nid.szTip),
-                  "%s — %ld active", APP_NAME, n);
+                  "%s - %ld active", APP_NAME, n);
     else
         _snprintf(g_nid.szTip, sizeof(g_nid.szTip),
-                  "%s — :%d", APP_NAME, g_port);
+                  "%s - :%d", APP_NAME, g_port);
     Shell_NotifyIconA(NIM_MODIFY, &g_nid);
 }
 
@@ -436,9 +450,16 @@ static void tray_create(HWND hwnd)
     g_nid.uID              = 1;
     g_nid.uFlags           = NIF_ICON | NIF_MESSAGE | NIF_TIP;
     g_nid.uCallbackMessage = WM_TRAYICON;
-    g_nid.hIcon            = LoadIconA(NULL, (LPCSTR)IDI_APPLICATION);
+    HINSTANCE hInst = GetModuleHandle(NULL);
+    g_icon_idle   = LoadIconA(hInst, MAKEINTRESOURCEA(IDI_TRAY_DISCONNECTED));
+    g_icon_active = LoadIconA(hInst, MAKEINTRESOURCEA(IDI_TRAY_CONNECTED));
+    if (!g_icon_idle)
+        g_icon_idle = LoadIconA(NULL, (LPCSTR)IDI_APPLICATION);
+    if (!g_icon_active)
+        g_icon_active = g_icon_idle;
+    g_nid.hIcon            = g_icon_idle;
     _snprintf(g_nid.szTip, sizeof(g_nid.szTip),
-              "%s — :%d", APP_NAME, g_port);
+              "%s - :%d", APP_NAME, g_port);
     Shell_NotifyIconA(NIM_ADD, &g_nid);
 }
 
@@ -527,12 +548,7 @@ static int run_tray(void)
 {
     /* Open log file next to the exe */
     open_log_file();
-    logmsg("%s — tray mode", APP_NAME);
-
-    /* Hide console window (if any) */
-    HWND con = GetConsoleWindow();
-    if (con) ShowWindow(con, SW_HIDE);
-    FreeConsole();
+    logmsg("%s - tray mode", APP_NAME);
 
     /* Register window class */
     WNDCLASSEXA wc = {0};

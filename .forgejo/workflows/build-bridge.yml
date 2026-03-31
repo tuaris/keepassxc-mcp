@@ -28,7 +28,7 @@ jobs:
 
       - name: Build kpxc-bridge.exe
         run: |
-          zig cc -O2 -target x86_64-windows-gnu bridge/kpxc-bridge.c -lws2_32 -ladvapi32 -lshell32 -luser32 -o kpxc-bridge.exe
+          zig cc -O2 -target x86_64-windows-gnu bridge/kpxc-bridge.c bridge/resources/kpxc-bridge.rc -lws2_32 -ladvapi32 -lshell32 -luser32 -Wl,--subsystem,windows -o kpxc-bridge.exe
           file kpxc-bridge.exe
           ls -l kpxc-bridge.exe
 
