@@ -28,7 +28,7 @@ jobs:
 
       - name: Build kpxc-bridge.exe
         run: |
-          zig cc -O2 -target x86_64-windows-gnu bridge/kpxc-bridge.c -lws2_32 -ladvapi32 -o kpxc-bridge.exe
+          zig cc -O2 -target x86_64-windows-gnu bridge/kpxc-bridge.c -lws2_32 -ladvapi32 -lshell32 -luser32 -o kpxc-bridge.exe
           file kpxc-bridge.exe
           ls -l kpxc-bridge.exe
 
@@ -117,7 +117,7 @@ jobs:
 
           # Create release
           RESP=$(curl -s -X POST -H "$AUTH" -H "Content-Type: application/json" \
-            -d "{\"tag_name\":\"$TAG\",\"name\":\"$TAG\",\"body\":\"## KeePassXC TCP Bridge $TAG\\n\\nCommit: $GITHUB_SHA\\n\\n### Downloads\\n- **kpxc-bridge-${VERSION}-setup.exe** - Windows installer (installs service + firewall rule)\\n- **kpxc-bridge.exe** - Standalone binary\",\"draft\":false,\"prerelease\":false}" \
+            -d "{\"tag_name\":\"$TAG\",\"name\":\"$TAG\",\"body\":\"## KeePassXC TCP Bridge $TAG\\n\\nCommit: $GITHUB_SHA\\n\\n### Downloads\\n- **kpxc-bridge-${VERSION}-setup.exe** - Windows installer (tray app + firewall rule)\\n- **kpxc-bridge.exe** - Standalone binary\",\"draft\":false,\"prerelease\":false}" \
             "$BASE_URL/releases")
           echo "Create release response: $RESP"
           RELEASE_ID=$(echo "$RESP" | grep -o '"id":[0-9]*' | head -1 | grep -o '[0-9]*')
