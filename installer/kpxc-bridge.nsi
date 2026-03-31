@@ -114,10 +114,17 @@ Section "Install"
     "InstallLocation" "$INSTDIR"
   WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\KeePassXCBridge" \
     "Publisher" "Daniel Morante"
+  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\KeePassXCBridge" \
+    "DisplayIcon" '"$INSTDIR\kpxc-bridge.exe",0'
   WriteRegDWORD HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\KeePassXCBridge" \
     "NoModify" 1
   WriteRegDWORD HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\KeePassXCBridge" \
     "NoRepair" 1
+
+  ; Create Start Menu shortcut
+  CreateDirectory "$SMPROGRAMS\KeePassXC Bridge"
+  CreateShortcut "$SMPROGRAMS\KeePassXC Bridge\KeePassXC Bridge.lnk" "$INSTDIR\kpxc-bridge.exe"
+  CreateShortcut "$SMPROGRAMS\KeePassXC Bridge\Uninstall.lnk" "$INSTDIR\uninstall.exe"
 
   ; Remember install dir
   WriteRegStr HKLM "Software\KeePassXC Bridge" "InstallDir" "$INSTDIR"
@@ -145,6 +152,11 @@ Section "Uninstall"
   Delete "$INSTDIR\kpxc-bridge.pdb"
   Delete "$INSTDIR\uninstall.exe"
   RMDir "$INSTDIR"
+
+  ; Remove Start Menu shortcuts
+  Delete "$SMPROGRAMS\KeePassXC Bridge\KeePassXC Bridge.lnk"
+  Delete "$SMPROGRAMS\KeePassXC Bridge\Uninstall.lnk"
+  RMDir "$SMPROGRAMS\KeePassXC Bridge"
 
   ; Clean registry
   DeleteRegKey HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\KeePassXCBridge"
