@@ -83,8 +83,8 @@ Section "Install"
   nsExec::Exec 'sc delete KeePassXCBridge'
   Sleep 1000
 
-  ; Kill any running tray instance
-  nsExec::ExecToLog 'taskkill /F /IM kpxc-bridge.exe'
+  ; Kill any running tray instance (silent — may not be running on fresh install)
+  nsExec::Exec 'taskkill /F /IM kpxc-bridge.exe'
   Sleep 500
 
   ; Copy files

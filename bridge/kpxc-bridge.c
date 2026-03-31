@@ -546,6 +546,15 @@ static void open_log_file(void)
 
 static int run_tray(void)
 {
+    /* Prevent multiple instances */
+    HANDLE hMutex = CreateMutexA(NULL, TRUE, "Global\\KeePassXCBridge_SingleInstance");
+    if (GetLastError() == ERROR_ALREADY_EXISTS) {
+        MessageBoxA(NULL, "KeePassXC TCP Bridge is already running.",
+                     APP_NAME, MB_OK | MB_ICONINFORMATION);
+        if (hMutex) CloseHandle(hMutex);
+        return 0;
+    }
+
     /* Open log file next to the exe */
     open_log_file();
     logmsg("%s - tray mode", APP_NAME);
