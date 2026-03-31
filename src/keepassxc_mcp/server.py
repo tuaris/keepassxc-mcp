@@ -258,6 +258,9 @@ def _dispatch_tool(name: str, args: dict) -> dict:
 
         elif name == "get_database_groups":
             result = _get_client().get_database_groups()
+            # KeePassXC may double-encode the response as a JSON string
+            if isinstance(result, str):
+                result = json.loads(result)
 
             def fmt(g: dict, depth: int = 0) -> str:
                 indent = "  " * depth
