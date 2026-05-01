@@ -166,6 +166,14 @@ If you find this project useful, consider a small donation:
 | **PEPE (Ᵽ)** | `Pk3WZshXxi656RNNoVuZTCERVhhv4pyPJS` |
 | **DOGE** | `DQgDGexy5tJ4StbMdyGwgfyxhcAGTRrPVB` |
 
+## Known Limitations
+
+The keepassxc-browser protocol has no search-by-title, list-all-entries, or filter-by-group action. `get_logins` **requires a URL** and only returns entries whose URL field matches. Entries without a URL, or with a URL you don't know, cannot be discovered programmatically.
+
+This is a protocol-level constraint — the browser integration was designed for browser extensions that always operate in the context of a URL. `keepassxc-cli` supports richer queries but requires direct access to the database file, which is incompatible with remote/TCP deployments.
+
+If you need to look up an entry, you must know (or guess) the URL stored on it.
+
 ## Protocol Reference
 
 This server implements the [keepassxc-browser protocol](https://github.com/keepassxreboot/keepassxc-browser/blob/develop/keepassxc-protocol.md).
