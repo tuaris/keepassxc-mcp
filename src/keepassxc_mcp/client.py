@@ -267,6 +267,9 @@ class KPXCClient:
                 "key": self.identity["idKey"],
             })
             return result.get("success") == "true"
+        except (ConnectionError, BrokenPipeError, ConnectionResetError,
+                OSError, TimeoutError):
+            raise
         except Exception:
             return False
 
